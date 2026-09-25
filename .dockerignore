@@ -1,0 +1,16 @@
+.git
+.github
+.gitignore
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+deploy
+README.md
+SKILL.md
+CONTRIBUTING.md
+SECURITY.md
+tests
+pyproject.toml
+requirements-dev.txt

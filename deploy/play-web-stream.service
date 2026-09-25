@@ -1,0 +1,77 @@
+[Unit]
+Description=play-web-stream LAN resolver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python __DIR__/webapp.py --port 8786
+Restart=on-failure
+RestartSec=3
+# The proxies are deliberately detached children with their own idle timeout, so
+# they must outlive a restart of this unit.
+KillMode=process
+
+# Upstream fetches leave through whatever this names, so stream origins see its address
+# rather than this connection's; the LAN is still reached directly. Any HTTP proxy will
+# do -- docker-compose.vpn.yml stands one up on a VPN. Named this way rather than as
+# https_proxy on purpose: see "Hide the address the origin sees" in README.md.
+#Environment=PWS_EGRESS_PROXY=http://127.0.0.1:8888
+
+# Under Docker the container is the boundary. Installed this way there is no
+# container, so these are it: the app runs as you, on your box, and drives a real
+# browser over whatever page it is pointed at. See "What the container is holding"
+# in SECURITY.md -- this is the same posture, by the other mechanism.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The one thing it writes: AirPlay credentials, once per receiver. install.sh
+# creates this, and the unit fails loudly rather than quietly at pairing time if
+# it is missing.
+ReadWritePaths=__HOME__/.config/play-web-stream
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+# Nothing here binds a port below 1024, so it needs no capability at all.
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+RestrictRealtime=true
+SystemCallArchitectures=native
+# 0077, because pyatv writes the paired credentials itself and the mode they land
+# with is its business, not ours. The proxies' own files are opened 0600 already.
+UMask=0077
+
+# Three that look like they belong here and do not:
+#
+#   PrivateTmp=      A fresh /tmp per start. The detached proxies keep serving out
+#                    of the old one, so a restarted app cannot see -- or stop --
+#                    the streams it is still serving. KillMode=process above is
+#                    the same decision seen from the other side.
+#   RestrictNamespaces=
+#                    Chromium's own sandbox is user namespaces. Unlike in the
+#                    container, here it is on and worth having; this would turn it
+#                    off without saying so.
+#   SystemCallFilter=
+#                    A browser's syscalls are nothing like a service's. It dies at
+#                    launch, and the message does not say why.
+#   RestrictAddressFamilies=
+#                    Same story one layer down: netlink for network-change
+#                    detection, unix sockets between Chromium's own processes.
+#   ProcSubset=pid   Chromium reads /proc/cpuinfo and /proc/meminfo to size itself.
+#   MemoryDenyWriteExecute=
+#                    V8 compiles JavaScript to memory it then executes. That is
+#                    what a JIT is.
+#
+# MemoryMax=2G       Available if wanted. Left off because the kill lands on the
+#                    whole app, streams included.
+
+[Install]
+WantedBy=multi-user.target

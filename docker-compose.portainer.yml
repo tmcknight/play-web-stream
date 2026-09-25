@@ -1,0 +1,139 @@
+# Portainer stack, bridge networking. Point a Repository stack at this path.
+#
+# The two-file form -- `docker compose -f docker-compose.yml -f docker-compose.bridge.yml`
+# -- is a command line Portainer CE has no equivalent for: a git stack takes a single
+# compose path. So this file is that combination already applied, and it is the one to
+# edit for a Portainer deploy; the other two stay as they are for the command line.
+#
+# Bridge rather than host because the AirPlay timing callback is the only thing host
+# mode was buying, and it is pinned here and published as UDP instead. Two things then
+# have to be spelled out: PWS_ADVERTISE_IP, since inside the container the app can only
+# see the docker bridge, and the whole proxy port range, since each stream takes the
+# next free port at runtime.
+#
+# Set PWS_ADVERTISE_IP in Portainer's own environment-variables box when you add the
+# stack. It has no default on purpose -- a wrong one produces URLs a television cannot
+# fetch, which looks like a broken stream rather than a misconfiguration.
+#
+# The VPN sidecar at the bottom is off unless COMPOSE_PROFILES=vpn is set there too,
+# so a stack that wants nothing to do with it deploys exactly as it did before. The
+# variables the pair of them want, all in that same box:
+#
+#   COMPOSE_PROFILES=vpn
+#   NORD_PRIVATE_KEY=<44 characters, from Nord's API -- see docker-compose.vpn.yml>
+#   NORD_COUNTRIES=Netherlands
+#   PWS_EGRESS_PROXY=http://gluetun:8888
+#
+# Setting the proxy and forgetting the profile is the one mistake to know about: the
+# address points at a container that was never started, every upstream fetch fails,
+# and the app says so. It is the safe direction to fail in -- nothing falls back to
+# fetching from this network -- but it looks like a broken deploy.
+
+name: play-web-stream
+
+services:
+  play-web-stream:
+    build: .
+    container_name: play-web-stream
+    # Chromium's own sandbox is off inside the container (see CHROMIUM_NO_SANDBOX in
+    # the Dockerfile): switching it on would mean handing the container back the user
+    # namespaces Docker's seccomp profile withholds, which loosens the boundary to
+    # tighten what sits inside it. These go the other way instead -- nothing to
+    # escalate to, no capabilities to use, and nothing writable but the paths that
+    # have to be. They matter because the fallback resolver drives a real browser
+    # over whatever page it is pointed at.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # Chromium's profile, and the proxies' state files -- which name a token and a
+      # pid, and so are written 0600 into a directory only this user owns.
+      - /tmp:size=256m,mode=1777
+      # $HOME. Chromium writes its caches and crash dumps here whatever else it is told.
+      - /home/app:size=64m,mode=1777
+    pids_limit: 512
+    # A runaway is capped rather than left to take the host down with it. Raise it if
+    # a full house of streams plus the browser ever gets close; an OOM kill lands on
+    # the whole container, so this is deliberately loose.
+    mem_limit: 2g
+    restart: unless-stopped
+    shm_size: 256m          # chromium crashes on the default 64m
+    ports:
+      - "${PWS_PORT:-8786}:${PWS_PORT:-8786}"
+      # Four streams at once, which is more than a house watches. Each published port
+      # costs a docker-proxy process and has to be free for the container to start at
+      # all, so the range is the number of simultaneous streams you actually want
+      # rather than the twenty the proxy would otherwise search. PWS_PROXY_PORT_LAST
+      # goes to the app as well as to docker, so the range is a limit the page can
+      # state and enforce rather than a cliff a stream falls off.
+      - "${PWS_PROXY_PORT:-8787}-${PWS_PROXY_PORT_LAST:-8790}:${PWS_PROXY_PORT:-8787}-${PWS_PROXY_PORT_LAST:-8790}"
+      # AirPlay's timing callback. The receiver dials back on it, so it has to be
+      # reachable from the LAN; pyatv's video path would otherwise bind an ephemeral
+      # port, which is what makes AirPlay look like it needs host networking.
+      - "${PWS_AIRPLAY_TIMING_PORT:-49170}:${PWS_AIRPLAY_TIMING_PORT:-49170}/udp"
+    volumes:
+      - pyatv:/config           # AirPlay credentials and remembered receivers,
+                                #   so pairing and finding are each once per receiver
+    environment:
+      PWS_PORT: "${PWS_PORT:-8786}"
+      PWS_PROXY_PORT: "${PWS_PROXY_PORT:-8787}"
+      # The same number docker publishes above. The app holds itself to it,
+      # so a stream is refused with a reason rather than served on a port
+      # outside the published range.
+      PWS_PROXY_PORT_LAST: "${PWS_PROXY_PORT_LAST:-8790}"
+      PWS_ADVERTISE_IP: "${PWS_ADVERTISE_IP:?set it to the LAN address of the machine running this stack}"
+      PWS_AIRPLAY_TIMING_PORT: "${PWS_AIRPLAY_TIMING_PORT:-49170}"
+      # PTP, then NTP if the receiver refuses it. tvOS 26.5 and later go quiet on NTP.
+      PWS_AIRPLAY_TIMING: "${PWS_AIRPLAY_TIMING:-auto}"
+      # Receiver addresses, comma-separated. Optional, and rarely worth setting: the
+      # app's AirPlay card sweeps this /24 for receivers, pairs with them, and writes
+      # the addresses to /config, so the sweep is a one-off rather than a per-deploy
+      # cost. Naming one here pins it -- and makes it one the card cannot forget.
+      PWS_AIRPLAY_HOST: "${PWS_AIRPLAY_HOST:-}"
+      # Hostnames this app answers to, comma-separated. Leave it empty unless
+      # you reach it by name rather than by address: an address cannot be
+      # repointed at us by somebody else's DNS, and a name can. See SECURITY.md.
+      PWS_ALLOW_HOSTS: "${PWS_ALLOW_HOSTS:-}"
+      # PWS_WINDOW: "12"         # segments to advertise; raise if a stream stalls
+      # Empty unless it is set in Portainer, and then every upstream fetch -- playlist,
+      # segments, and the headless browser's page load -- goes through the sidecar
+      # below, so stream origins see its address and not this connection's. By service
+      # name, not 127.0.0.1: under bridge networking the app is not on the host's
+      # loopback, and the proxy is deliberately published nowhere.
+      PWS_EGRESS_PROXY: "${PWS_EGRESS_PROXY:-}"
+
+  # The tunnel, as a sidecar rather than a network the app is placed inside. This app
+  # is fetched *from* as much as it fetches -- Safari asks it for segments and an Apple
+  # TV goes to it directly -- so it has to keep a LAN address and answer on the LAN,
+  # which network_mode: service:gluetun takes away. The split is by destination instead:
+  # origins through the proxy, this network direct. See README, "Hide the address the
+  # origin sees".
+  gluetun:
+    image: qmcgaw/gluetun:v3.40.0
+    container_name: play-web-stream-vpn
+    # Nothing starts this unless COMPOSE_PROFILES=vpn says so, which is what keeps the
+    # file one file: a stack with no VPN deploys as it always did.
+    profiles: [vpn]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    # No ports. The proxy is reached over the stack's own network as gluetun:8888 and
+    # is published to nothing -- an HTTP proxy on the LAN is an open relay for anyone
+    # on it, and this one has a VPN on the far side.
+    environment:
+      VPN_SERVICE_PROVIDER: nordvpn
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: "${NORD_PRIVATE_KEY:?set it in Portainer -- see the header}"
+      SERVER_COUNTRIES: "${NORD_COUNTRIES:-}"
+      HTTPPROXY: "on"
+      HTTPPROXY_LISTENING_ADDRESS: ":8888"
+      # Gluetun resolves over the tunnel, so a lookup for an origin does not go to the
+      # household resolver and describe what is being watched.
+      DOT: "on"
+    restart: unless-stopped
+
+volumes:
+  pyatv:

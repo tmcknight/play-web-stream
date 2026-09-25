@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Play web stream</title>
+<!-- The icon travels inside the document, because the app is one file the server
+     reads off disk and a second request would be a second thing to keep in step.
+     iOS wants a PNG for the home screen and may well ignore the SVG below; that
+     costs a rounded square on the springboard, not the feature. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236ea8fe'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%230b0b0e'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236ea8fe'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%230b0b0e'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #101013; --card: #17171c; --line: #2a2a33;
+    --ink: #e8e8ea; --dim: #9a9aa6; --accent: #6ea8fe; --bad: #ff8080; --good: #7ddba1;
+    /* Two colours that used to be written into rules one at a time: the ink a filled
+       button carries, and the well a log or a code block sits in. A light theme has
+       to move both, so they are tokens like the rest. */
+    --on-accent: #0b0b0e; --well: #0d0d11;
+  }
+  /* The phone that opens this at a match is as likely to be in daylight as not.
+     Same tokens, moved; no rule below knows which theme it is in. */
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f4f4f7; --card: #ffffff; --line: #d9d9e2;
+      --ink: #1a1a20; --dim: #5d5d6b; --accent: #1f5fd0; --bad: #b3261e; --good: #18794e;
+      --on-accent: #ffffff; --well: #f2f2f6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em;
+       display: flex; align-items: center; gap: 9px; }
+  p.sub { margin: 0 0 24px; color: var(--dim); font-size: 13px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type=url], input[type=text] {
+    flex: 1 1 320px; min-width: 0; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: 15px;
+  }
+  input:focus-visible, a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  input[type=url]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button, .btn {
+    padding: 12px 18px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 15px;
+    font-family: inherit; line-height: 1.2; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  a.btn { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+  button.ghost, .btn.ghost { background: transparent; color: var(--ink); font-weight: 500; }
+  /* Stop and Forget end something that is running. They are not the same kind of
+     thing as Log or Copy and should not look like them. */
+  button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+  /* A button waiting for its second tap wears the danger colour for as long as it
+     waits, so a quiet button that ends something is loud exactly when it is about to. */
+  button.armed { color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label.opt { display: flex; align-items: center; gap: 7px; color: var(--dim); font-size: 13px; margin: 10px 2px 0; }
+  section { margin-top: 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .status { display: flex; align-items: center; gap: 9px; font-weight: 600; margin: 0 0 12px; }
+  .card.err .status { color: var(--bad); }
+  .stage { color: var(--dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .stage span { display: block; padding: 3px 0; }
+  .stage .done { display: flex; align-items: center; gap: 7px; }
+  .stage .now { color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .spin {
+    width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    display: inline-block; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+  /* A URL has no spaces to break at, so it is told it may break anywhere -- but at a
+     character boundary, which is what break-all here was getting wrong on the odd
+     percent-escape. */
+  .urlbox {
+    display: block; overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px; color: var(--accent); text-decoration: none; margin-bottom: 14px;
+  }
+  /* In a stream row the URL is an identifier, not something to read: one line, with
+     the middle elided by fitUrl(), and the whole of it in the row's Details. */
+  .urlbox.one { white-space: nowrap; overflow: hidden; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .grow { flex: 1 1 auto; }
+  /* Dark modules on white whatever the theme. Light-on-dark is an inverted code, and
+     plenty of cameras will not read one; the white patch is the quiet zone too. */
+  .qr { background: #ffffff; width: 132px; height: 132px; flex: 0 0 auto; border-radius: 8px; }
+  .qr svg { width: 100%; height: 100%; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 13px; }
+  dt { color: var(--dim); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .err { border-color: var(--bad); }
+  .hint { color: var(--dim); font-size: 13px; margin-top: 6px; }
+  .tried { margin: 0 0 8px; overflow-wrap: anywhere; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+       margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
+  /* One row of the two lists this page keeps: running streams, and receivers. They
+     are laid out alike and are not the same thing, so neither owns the class. */
+  .line { display: flex; gap: 12px; align-items: center; justify-content: space-between;
+          padding: 10px 0; font-size: 13px; flex-wrap: wrap; }
+  .line + .line { border-top: 1px solid var(--line); }
+  .line code { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  .who { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+  /* A button per television, per protocol, is a long row in a house with four of
+     them. So the row drops onto its own line rather than squeezing the URL beside it
+     down to one character per line, and its buttons are sized for a 13px row. */
+  .line .what { flex: 1 1 260px; min-width: 0; }
+  .line .acts { flex: 0 1 auto; justify-content: flex-end; }
+  .line button { padding: 9px 12px; font-size: 13px; }
+  .live { color: var(--good); }
+  details { margin-top: 10px; }
+  summary { color: var(--dim); font-size: 13px; cursor: pointer;
+            display: flex; align-items: center; gap: 6px; list-style: none; }
+  details .pad { padding-top: 8px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 12.5px; }
+  .kv span { color: var(--dim); }
+  pre.cmd {
+    margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--well);
+    border: 1px solid var(--line); overflow-x: auto; font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+  }
+  .warn { color: var(--bad); font-size: 12.5px; margin-top: 10px; }
+  pre.log { max-height: 220px; overflow-y: auto; white-space: pre-wrap; color: var(--dim); }
+  .muted { color: var(--dim); font-size: 13px; }
+  .sample { margin: 10px 2px 0; }
+  .sample a, .callout a { color: var(--accent); }
+  .callout {
+    margin: 14px 0 0; padding: 12px 14px; border-radius: 10px; font-size: 13px;
+    border: 1px solid var(--line); background: var(--card); color: var(--dim);
+  }
+  /* Icons. One size for a glyph standing beside a word, and the colour of whatever it
+     stands in -- every one is drawn with currentColor, so the glyph on a filled button
+     and the glyph in a dim hint each come out the right colour without a rule of their
+     own. They are all aria-hidden: the words beside them are what is read aloud, and
+     nothing on this page is said by a picture alone. */
+  .sprite { display: none; }
+  .ico { width: 17px; height: 17px; flex: 0 0 auto; }
+  h1 .ico { width: 22px; height: 22px; color: var(--accent); }
+  h2 .ico, .stage .ico, .warn .ico, .note .ico, .live .ico { width: 14px; height: 14px; }
+  .status .ico { width: 19px; height: 19px; color: var(--good); }
+  .card.err .status .ico { color: var(--bad); }
+  .stage .done .ico { color: var(--good); }
+  /* A glyph in running prose has no flex row to sit in the middle of, so it is dropped
+     onto the text's baseline by hand. */
+  .sample .ico, .callout .ico { width: 15px; height: 15px; vertical-align: -3px; margin-right: 4px; }
+  /* A block, not inline: two hand-offs that failed are two sentences, and inline they
+     ran together on any row wide enough to hold both. */
+  .warn { display: flex; gap: 6px; align-items: flex-start; }
+  .live { display: inline-flex; gap: 6px; }
+  /* Beside a button in a row of them, a warning is a label and not a paragraph, so it
+     loses the space it would have above it under a card's text. */
+  .acts .warn { margin-top: 0; }
+  .warn .ico { margin-top: 2px; }
+  .live { align-items: center; }
+  /* A sentence that wraps keeps its glyph in a column beside it rather than letting it
+     become the first word of the second line. */
+  .note { display: flex; align-items: flex-start; gap: 8px; }
+  .note .ico { margin-top: 2px; }
+  /* The chevron stands in for the disclosure triangle the browser would draw, so the
+     one arrow on the page is in the same hand as everything else. */
+  summary::-webkit-details-marker { display: none; }
+  summary .ico { width: 14px; height: 14px; transition: transform .15s ease; }
+  details[open] > summary .ico { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { summary .ico { transition: none; } }
+  @media (max-width: 520px) {
+    .qr { display: none; }
+    /* On a phone every button row wraps, and right-aligned wrapped rows read as
+       ragged. Line them up with the URL above them instead. */
+    .line .acts { justify-content: flex-start; }
+    /* A thumb is not a mouse pointer. Nothing here is smaller than a thumb. */
+    button, .btn, .line button { min-height: 44px; }
+  }
+</style>
+
+<!-- Heroicons (MIT, Tailwind Labs), the 24px outline set, copied in rather than linked.
+     This page is one file the server reads off disk and hands to a phone on a LAN that
+     may have no route to the internet at all, so a stylesheet from a CDN would be two
+     dozen ways for the icons to simply not be there. Each glyph is a <symbol> and the
+     page draws one with <use href="#i-name">. -->
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <!-- Heroicons has no AirPlay mark, and the triangle typed in its
+       place read as a bullet point. This is Apple's shape -- a screen
+       with the beam under it -- drawn on the same 24 grid, at the same
+       1.5 weight, so it sits in a row of the others without shouting. -->
+  <symbol id="i-airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.25 15.75H4.5A2.25 2.25 0 0 1 2.25 13.5V6A2.25 2.25 0 0 1 4.5 3.75h15A2.25 2.25 0 0 1 21.75 6v7.5a2.25 2.25 0 0 1-2.25 2.25h-3.75"/>
+    <path d="M12 15 17.25 20.25H6.75L12 15Z" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-play-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+    <path d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z"/>
+  </symbol>
+  <symbol id="i-magnifying-glass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"/>
+  </symbol>
+  <symbol id="i-adjustments-horizontal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"/>
+  </symbol>
+  <symbol id="i-arrow-top-right-on-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+  </symbol>
+  <symbol id="i-clipboard-document" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 18H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08M15.75 18.75v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5A3.375 3.375 0 0 0 6.375 7.5H5.25m11.9-3.664A2.251 2.251 0 0 0 15 2.25h-1.5a2.251 2.251 0 0 0-2.15 1.586m5.8 0c.065.21.1.433.1.664v.75h-6V4.5c0-.231.035-.454.1-.664M6.75 7.5H4.875c-.621 0-1.125.504-1.125 1.125v12c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V16.5a9 9 0 0 0-9-9Z"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m4.5 12.75 6 6 9-13.5"/>
+  </symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+  </symbol>
+  <symbol id="i-x-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+  </symbol>
+  <symbol id="i-x-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 18 18 6M6 6l12 12"/>
+  </symbol>
+  <symbol id="i-arrow-path" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>
+  </symbol>
+  <symbol id="i-document-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+  </symbol>
+  <symbol id="i-eye-slash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88"/>
+  </symbol>
+  <symbol id="i-stop-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+    <path d="M9 9.563C9 9.252 9.252 9 9.563 9h4.874c.311 0 .563.252.563.563v4.874c0 .311-.252.563-.563.563H9.564A.562.562 0 0 1 9 14.437V9.564Z"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
+  </symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/>
+  </symbol>
+  <symbol id="i-exclamation-triangle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+  </symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125Z"/>
+  </symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/>
+  </symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/>
+  </symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m8.25 4.5 7.5 7.5-7.5 7.5"/>
+  </symbol>
+  <symbol id="i-pencil-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/>
+  </symbol>
+  <symbol id="i-globe-alt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418"/>
+  </symbol>
+  <symbol id="i-no-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636"/>
+  </symbol>
+</svg>
+
+<main>
+  <h1><svg class="ico" aria-hidden="true"><use href="#i-play-circle"/></svg>Play web stream</h1>
+  <p class="sub">Paste a page URL. Get one Safari will actually play &mdash; AirPlay, fullscreen and all.</p>
+
+  <form id="f">
+    <input type="url" id="url" placeholder="https://embed.example/stream/123" required
+           aria-label="Page or playlist URL"
+           autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="go" data-icon="magnifying-glass"><svg class="ico" aria-hidden="true"><use href="#i-magnifying-glass"/></svg><span class="lbl">Resolve</span></button>
+  </form>
+  <details id="opts">
+    <summary><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg>Options</summary>
+    <label class="opt"><input type="checkbox" id="browser" checked>
+      Also try a headless browser (slower, finds players built at runtime)</label>
+  </details>
+  <p class="warn" id="full" hidden></p>
+  <p class="muted" id="egress" hidden></p>
+  <p class="muted sample"><svg class="ico" aria-hidden="true"><use href="#i-sparkles"/></svg>No stream handy? <a href="#" id="sample">Use a sample playlist</a>
+    to check this app and your TV.</p>
+  <p class="callout" id="pairhint" hidden><svg class="ico" aria-hidden="true"><use href="#i-tv"/></svg>To send streams to a TV, pair an Apple TV first.
+    <a href="#airplayWrap" id="topair">Set one up</a>.</p>
+
+  <!-- Polite, so a screen reader hears each stage and the verdict without being
+       interrupted mid-word by the next one. -->
+  <section id="out" aria-live="polite"></section>
+
+  <section id="streamsWrap" hidden>
+    <h2><svg class="ico" aria-hidden="true"><use href="#i-signal"/></svg>Running <span id="count"></span></h2>
+    <div class="card" id="streams"></div>
+  </section>
+
+  <section id="airplayWrap">
+    <h2><svg class="ico" aria-hidden="true"><use href="#i-airplay"/></svg>AirPlay receivers</h2>
+    <div class="card" id="airplay"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// esc() makes a string safe as text or inside a quoted attribute; it does not make a
+// URL safe to navigate to, because "javascript:..." survives it unchanged. Every href
+// here is built from a playlist URL the resolver worked out, so anything but http(s)
+// means something upstream went wrong -- and "#" is the harmless way to say so.
+const href = (s) => /^https?:\/\//i.test(String(s ?? "")) ? esc(s) : "#";
+
+// One glyph out of the sprite at the top of the document.
+const ico = (name) => `<svg class="ico" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+
+// The inside of a labelled control: the glyph, then the words in a span of their own.
+// The span is the point -- the words on the buttons here change constantly ("Copy" to
+// "Copied", "Log" to "Hide log", a receiver's name to "Starting\u2026") and a plain
+// `button.textContent = "..."` would take the glyph out with them. Every label on this
+// page goes through setLabel() instead, which keeps the glyph named in data-icon.
+const withIcon = (icon, text) => (icon ? ico(icon) : "") + `<span class="lbl">${esc(text)}</span>`;
+
+function setLabel(el, text, icon) {
+  if (icon !== undefined) el.dataset.icon = icon || "";
+  el.innerHTML = withIcon(el.dataset.icon || "", text);
+}
+
+// What a control currently says, with the glyph left out of it: the counterpart to
+// setLabel(), for the several places that put a label back the way they found it.
+const labelOf = (el) => el.textContent.trim();
+
+// navigator.clipboard exists only in a secure context -- HTTPS, or localhost. This app
+// is meant to be reached on a LAN address over plain HTTP, so on every device except
+// the host machine it is simply absent, and copy failed with no way to see why. Fall
+// back to the old selection-based copy, which carries no such requirement.
+async function copyText(text) {
+  if (window.isSecureContext && navigator.clipboard) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);   // iOS Safari ignores select() alone
+  let ok = false;
+  try { ok = document.execCommand("copy"); } finally { ta.remove(); }
+  if (!ok) throw new Error("execCommand(copy) was refused");
+}
+
+// Report the reason rather than swallowing it: a refused clipboard and a missing one
+// are different problems and looked identical before.
+async function copyInto(btn, text, idle) {
+  try {
+    await copyText(text);
+    setLabel(btn, "Copied", "check");
+    btn.title = "";
+  } catch (e) {
+    setLabel(btn, "Copy failed", "exclamation-triangle");
+    btn.title = String((e && e.message) || e);
+  }
+  setTimeout(() => { setLabel(btn, idle, "clipboard-document"); btn.title = ""; }, 1500);
+}
+
+// localStorage is a per-viewer convenience and nothing more. In a private window it
+// can be absent, and on some phones reading it throws rather than answering null, so
+// every touch of it is wrapped and the page renders the same either way.
+function remember(key, value) {
+  try { localStorage.setItem("pws." + key, value); } catch (e) { /* not worth a word */ }
+}
+function remembered(key) {
+  try { return localStorage.getItem("pws." + key); } catch (e) { return null; }
+}
+
+// A playlist that is always up, needs no resolving and belongs to nobody in
+// particular: the way to tell a receiver that will not play from a site whose stream
+// never arrived. Apple hosts it as their own HLS example, so it outlives most of what
+// anyone would otherwise paste in here to test with.
+const SAMPLE = "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8";
+
+// Straight to resolving: the link has nothing left for anyone to type, and focusing the
+// field only put a keyboard over the card the answer arrives in.
+$("sample").addEventListener("click", (ev) => {
+  ev.preventDefault();
+  $("url").value = SAMPLE;
+  startResolve(SAMPLE);
+});
+
+$("topair").addEventListener("click", () => {
+  $("airplayWrap").scrollIntoView({behavior: "smooth", block: "start"});
+});
+
+if (remembered("opts") === "1") $("opts").open = true;
+$("opts").addEventListener("toggle", () => remember("opts", $("opts").open ? "1" : "0"));
+
+// --------------------------------------------------------------------------- resolving
+
+// The server's progress lines are written for whoever is reading the log at eleven at
+// night. They are not written for someone holding a phone in front of a television,
+// which is who is watching this card, so they are translated on the way out. Anything
+// unmapped falls through unchanged: a line nobody has seen yet is still better read
+// than swallowed.
+const STAGE_TEXT = {
+  "reading page HTML": "Reading the page",
+  "no playlist in the HTML -- launching headless browser":
+    "Player is built at runtime. Opening a browser, up to 30 seconds",
+  "checking segment MIME types": "Checking the stream",
+  "starting the proxy": "Starting the proxy",
+  "playlist given directly": "Playlist given directly",
+  "the origin refused Python's TLS handshake -- presenting Safari's instead":
+    "Origin refused Python, retrying as Safari",
+  "loading page in chromium": "Opening the page in the browser",
+  "confirmed from a network response": "Caught the stream the player asked for",
+};
+
+function stageText(raw) {
+  if (STAGE_TEXT[raw]) return STAGE_TEXT[raw];
+  // Two of the browser's lines carry a count, so they are matched rather than looked up.
+  let m = /^scraping (\d+) frame/.exec(raw);
+  if (m) return `Reading ${m[1]} frame${m[1] === "1" ? "" : "s"} of the page`;
+  m = /^verifying (\d+) scraped candidate/.exec(raw);
+  if (m) return `Checking ${m[1]} possible stream${m[1] === "1" ? "" : "s"}`;
+  return raw;
+}
+
+let source = null;
+let busy = false;
+let lastTried = "";
+
+function setBusy(on) {
+  busy = on;
+  // The spinner takes the magnifier's place while a resolve is in flight: one thing
+  // in front of the words, either way, so the button does not change width as it goes.
+  $("go").innerHTML = on
+    ? `<span class="spin"></span><span class="lbl">Resolving\u2026</span>`
+    : withIcon("magnifying-glass", "Resolve");
+  // Capacity has its own say over this button, and the ten-second refresh applies it
+  // while a resolve is in flight -- so both conditions are asked here, every time.
+  $("go").disabled = on || full;
+  setTitle();
+}
+
+// The tab says what the page would, for someone who has it open behind another one:
+// whether a resolve is still going, and how many streams are running.
+function setTitle() {
+  const running = rows.size;
+  document.title = busy ? "Resolving\u2026 \u00b7 Play web stream"
+    : running ? `\u25b6 ${running} running \u00b7 Play web stream`
+    : "Play web stream";
+}
+
+// The card is built once per resolve and grows a line per stage, rather than being
+// written out whole each time: rewriting it took the focus off Cancel at every stage
+// and made a screen reader start the list again from the top. Every stage but the last
+// is finished, so it gets a check; the last is what the server is doing now, so it gets
+// the spinner.
+function beginProgress() {
+  $("out").innerHTML = `
+    <div class="card">
+      <div class="stage" id="stages"></div>
+      <div id="ptail"><div class="row" style="margin-top:14px">
+        <button class="ghost" id="cancel" data-icon="x-mark">${
+          withIcon("x-mark", "Cancel")}</button></div></div>
+    </div>`;
+  $("cancel").onclick = () => {
+    stop();
+    endProgress(`<div class="hint">Cancelled.</div>`);
+  };
+}
+
+function finishStage(line) {
+  line.className = "done";
+  line.innerHTML = ico("check") + esc(line.dataset.text);
+}
+
+function addStage(text) {
+  const list = $("stages");
+  if (!list) return;
+  const now = list.querySelector(".now");
+  if (now) finishStage(now);
+  const line = document.createElement("span");
+  line.className = "now";
+  line.dataset.text = text;
+  line.innerHTML = `<span class="spin"></span>${esc(text)}`;
+  list.appendChild(line);
+}
+
+// `tail` is whatever the run ended with: a cancellation, or a lost connection with the
+// way back out of it. It takes Cancel's place.
+function endProgress(tail) {
+  const now = $("stages") && $("stages").querySelector(".now");
+  if (now) finishStage(now);
+  if ($("ptail")) $("ptail").innerHTML = tail;
+  const retry = $("retry");
+  if (retry) retry.onclick = () => startResolve(lastTried);
+}
+
+function stop() {
+  if (source) source.close();
+  source = null;
+  setBusy(false);
+}
+
+function startResolve(url) {
+  if (!url || full) return;
+  lastTried = url;
+  // type=url is happy with any scheme, and the server answers anything but http(s) with
+  // a plain 400 -- which EventSource cannot read and reports as a dropped connection,
+  // offering a Retry that can only fail the same way. Say what is wrong instead.
+  if (!/^https?:\/\//i.test(url)) {
+    stop();
+    showError({error: "That is not a web address",
+               hint: "Give a link starting with http:// or https://."});
+    return;
+  }
+  stop();
+  remember("url", url);
+  setBusy(true);
+  beginProgress();
+  addStage("Resolving\u2026");
+
+  const q = new URLSearchParams({url, browser: $("browser").checked ? "1" : "0"});
+  source = new EventSource("/api/resolve?" + q);
+
+  source.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.stage) { addStage(stageText(msg.stage)); return; }
+    stop();
+    if (msg.error) showError(msg); else showResult(msg.done);
+    loadStreams();
+  };
+  source.onerror = () => {
+    stop();
+    endProgress(`<div class="hint">Connection lost.</div>
+      <div class="row" style="margin-top:14px"><button id="retry" data-icon="arrow-path">${
+        withIcon("arrow-path", "Retry")}</button></div>`);
+  };
+}
+
+$("f").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  startResolve($("url").value);
+});
+
+// The server's message is one sentence with the detail after a dash, which reads as a
+// wall on a phone. The dash is the seam: what went wrong goes in the title, the rest
+// goes below it with the hint.
+function showError(msg) {
+  const raw = String(msg.error || "That did not resolve.");
+  const cut = raw.indexOf(" -- ");
+  const title = cut > 0 ? raw.slice(0, cut) : raw;
+  const detail = cut > 0 ? raw.slice(cut + 4) : "";
+  const hint = String(msg.hint || "");
+  // Every hint that says to paste the page URL is asking for the one thing this
+  // button does, which is to put the cursor back where that is typed.
+  const offerPaste = /paste the page URL/i.test(hint);
+  $("out").innerHTML = `
+    ${lastTried ? `<p class="muted tried">Tried <code>${esc(lastTried)}</code></p>` : ""}
+    <div class="card err">
+      <div class="status">${ico("x-circle")}${esc(title)}</div>
+      ${detail ? `<div class="hint">${esc(detail[0].toUpperCase() + detail.slice(1))}</div>` : ""}
+      ${hint ? `<div class="hint">${esc(hint)}</div>` : ""}
+      ${offerPaste ? `<div class="row" style="margin-top:14px">
+        <button class="ghost" id="paste" data-icon="pencil-square">${
+          withIcon("pencil-square", "Paste the page URL instead")}</button></div>` : ""}
+    </div>`;
+  const paste = $("paste");
+  if (paste) paste.onclick = () => { $("url").focus(); $("url").select(); };
+}
+
+function showResult(r) {
+  lastResult = r;
+  const status = r.needs_proxy
+    ? (r.reused ? "Re-using a running proxy" : "Ready, served through the proxy")
+    : "Ready to play";
+  const how = r.needs_proxy
+    ? (r.reused ? "Re-used a proxy already serving this stream." : "Served through the proxy.")
+    : "No proxy needed \u2014 this is the origin URL.";
+  // Only when no proxy was needed. A proxied stream has a card of its own below, and
+  // two controls for the one hand-off would just disagree with each other. The origin
+  // URL travels with the buttons, since with no proxy running there is no instance for
+  // the server to look the stream up in.
+  const cast = r.needs_proxy ? "" : airplayPicker(r.playlist, r.playback_url);
+  $("out").innerHTML = `
+    <div class="card">
+      <div class="status">${ico("check-circle")}${esc(status)}</div>
+      <a class="urlbox" href="${href(r.playback_url)}">${esc(r.playback_url)}</a>
+      <div class="row">
+        ${r.qr ? `<div class="qr">${r.qr}</div>` : ""}
+        <div class="row grow">
+          <a class="btn" href="${href(r.playback_url)}" target="_blank" rel="noopener">${
+            withIcon("arrow-top-right-on-square", "Open in Safari")}</a>
+          <button class="ghost" id="copy" data-icon="clipboard-document">${
+            withIcon("clipboard-document", "Copy")}</button>
+          ${cast}
+        </div>
+      </div>
+      ${errorsFor(r.playlist).map(m => `<div class="warn">${
+        withIcon("exclamation-triangle", m)}</div>`).join("")}
+      <details>
+        <summary>${ico("chevron-right")}Details</summary>
+        <dl>
+          <dt>how</dt><dd>${esc(how)} ${esc(r.reason)}.</dd>
+          <dt>found</dt><dd>${esc({html:"in the page HTML",browser:"with the headless browser",direct:"given directly"}[r.method] || r.method)}</dd>
+          <dt>playlist</dt><dd>${esc(r.playlist)}</dd>
+          <dt>referer</dt><dd>${esc(r.referer || "(not required)")}</dd>
+          ${r.handshake === "browser" ? `<dt>handshake</dt><dd>Safari's, via curl_cffi — the origin refused Python's</dd>` : ""}
+          <dt>segments</dt><dd>served as ${esc(r.mime.served_as)}, really ${esc(r.mime.really_is)}</dd>
+        </dl>
+      </details>
+    </div>`;
+  const copy = $("copy");
+  if (copy) copy.onclick = () => copyInto(copy, r.playback_url, "Copy");
+
+  $("out").querySelectorAll("[data-airplay]").forEach(bindAirplay);
+}
+
+// --------------------------------------------------------------------------- streams
+
+// One fetch answers the whole AirPlay picture: whether pyatv is here, which receivers
+// answered, which of them are paired, what is playing on each, and whether a pairing
+// is part-way through -- so a reload lands back in the flow rather than beside it.
+// `scan` is the deliberate slow path and is only ever passed by the button.
+async function refreshAirplay(scan) {
+  let a = {};
+  try {
+    a = await (await fetch("/api/airplay" + (scan ? "?scan=1" : ""))).json();
+  } catch (e) { a = {error: String(e)}; }
+  airplayAvailable = Boolean(a.available);
+  airplayReceivers = a.receivers || [];
+  airplaySessions = a.sessions || {};
+  airplayPairing = a.pairing || null;
+  if (a.error) pairError = a.error;
+  renderAirplay();
+}
+
+let full = false;
+
+function applyCapacity(cap) {
+  if (!cap) return;
+  full = cap.used >= cap.limit;
+  $("count").textContent = cap.used + " of " + cap.limit;
+  $("full").hidden = !full;
+  $("full").innerHTML = full
+    ? withIcon("exclamation-triangle",
+               `All ${cap.limit} stream${cap.limit === 1 ? "" : "s"} are running. `
+               + "Stop one to start another.")
+    : "";
+  // The long version -- that the limit is the range of ports published to this
+  // machine, so a further stream would serve where nothing listens -- is true and is
+  // not what a full page needs to say out loud.
+  $("full").title = "The limit is the range of ports published to this machine.";
+  $("go").disabled = full || busy;
+}
+
+async function loadStreams() {
+  let streams = [], capacity = null;
+  try {
+    const body = await (await fetch("/api/streams")).json();
+    streams = body.streams; capacity = body.capacity;
+  } catch (e) { return; }
+  applyCapacity(capacity);
+  // Each stream arrives with the receivers it is playing on. Without this the picker
+  // knew only what /api/airplay said at the last tap, so a television that finished, or
+  // a hand-off made from another phone, left a button offering the wrong half of the
+  // toggle until the page was reloaded.
+  for (const s of streams) {
+    if (Array.isArray(s.airplay)) airplaySessions[s.source] = s.airplay;
+  }
+  $("streamsWrap").hidden = streams.length === 0;
+  syncRows(streams);
+  setTitle();
+}
+
+// This list used to be written out whole every ten seconds, which threw away
+// everything the person using it was in the middle of: an open log and where they had
+// scrolled it, a button reading "Starting…", the focus ring, a Details left open. A
+// row belongs to its source and now outlives the refresh; only the text inside it
+// moves.
+const rows = new Map();
+let logSeq = 0;
+
+function syncRows(streams) {
+  const seen = new Set();
+  for (const s of streams) {
+    seen.add(s.source);
+    let row = rows.get(s.source);
+    if (!row) {
+      row = buildRow(s);
+      rows.set(s.source, row);
+      $("streams").appendChild(row.el);
+    }
+    updateRow(row, s);
+  }
+  for (const [src, row] of [...rows]) {
+    if (!seen.has(src)) { row.el.remove(); rows.delete(src); retire(src); }
+  }
+}
+
+// A stream that stopped -- by the button, or by its own idle timeout -- leaves the card
+// above still offering its URL, and that URL now leads nowhere. Say so, and offer the
+// one thing that would bring it back.
+function retire(source) {
+  if (!lastResult || !lastResult.needs_proxy || lastResult.playlist !== source) return;
+  lastResult = null;
+  $("out").innerHTML = `
+    <div class="card">
+      <div class="muted note">${ico("stop-circle")}<span>That stream has stopped, so its
+        link no longer plays.</span></div>
+      ${lastTried ? `<div class="row" style="margin-top:14px">
+        <button class="ghost" id="again" data-icon="arrow-path">${
+          withIcon("arrow-path", "Resolve it again")}</button></div>` : ""}
+    </div>`;
+  const again = $("again");
+  if (again) again.onclick = () => startResolve(lastTried);
+}
+
+function buildRow(s) {
+  const el = document.createElement("div");
+  el.className = "line";
+  const logId = "log-" + (++logSeq);
+  el.innerHTML = `
+    <div class="what">
+      <div class="who"></div>
+      <a class="urlbox one" target="_blank" rel="noopener"></a>
+      <div class="live" hidden></div>
+      <div class="warns"></div>
+      <details class="more">
+        <summary>${ico("chevron-right")}Details</summary>
+        <div class="pad">
+          <div class="kv">
+            <span>Playback</span><code class="pb"></code>
+            <span>Source</span><code class="src"></code>
+            <span>Player</span><code class="rawplayer"></code>
+          </div>
+          <pre class="cmd log" id="${logId}" hidden></pre>
+        </div>
+      </details>
+    </div>
+    <div class="row acts">
+      <span class="ap row"></span>
+      <button class="ghost logbtn" data-icon="document-text" data-log="${logId}"
+              data-source="${esc(s.source)}">${withIcon("document-text", "Log")}</button>
+      <button class="danger stopbtn" data-icon="stop-circle"
+              data-stop="${esc(s.source)}">${withIcon("stop-circle", "Stop")}</button>
+    </div>`;
+  const q = (sel) => el.querySelector(sel);
+  const row = {
+    el, source: s.source, apSig: null,
+    who: q(".who"), url: q(".urlbox"), live: q(".live"), warns: q(".warns"),
+    pb: q(".pb"), src: q(".src"), rawplayer: q(".rawplayer"),
+    more: q(".more"), log: q("#" + logId), ap: q(".ap"),
+    logBtn: q(".logbtn"), stop: q(".stopbtn"),
+  };
+  bindRow(row);
+  return row;
+}
+
+function bindRow(row) {
+  row.logBtn.onclick = async () => {
+    if (openLogs.has(row.source)) {
+      openLogs.delete(row.source);
+      row.log.hidden = true;
+      setLabel(row.logBtn, "Log", "document-text");
+      return;
+    }
+    openLogs.add(row.source);
+    row.more.open = true;
+    setLabel(row.logBtn, "Hide log", "eye-slash");
+    await fillLog(row);
+  };
+
+  row.stop.onclick = () => arm(row.stop, "Stop? tap again", async () => {
+    row.stop.disabled = true;
+    try {
+      await fetch("/api/stop", {method: "POST", headers: {"Content-Type": "application/json"},
+                                body: JSON.stringify({source: row.source})});
+    } finally {
+      row.stop.disabled = false;         // a stop that failed leaves a usable button
+    }
+    loadStreams();
+  });
+}
+
+function updateRow(row, s) {
+  const who = hostOf(s.source);
+  if (row.who.textContent !== who) row.who.textContent = who;
+  if (row.url.dataset.full !== s.url) {
+    row.url.dataset.full = s.url;
+    row.url.href = href(s.url);
+    row.url.title = s.url;
+    fitUrl(row.url);
+  }
+  row.pb.textContent = s.url;
+  row.src.textContent = s.source;
+
+  const human = humanPlayer(s.player);
+  row.live.hidden = !human;
+  if (human && labelOf(row.live) !== human) row.live.innerHTML = withIcon("signal", human);
+  row.rawplayer.textContent = (s.player || "").trim() || "(nothing reported yet)";
+
+  const warns = errorsFor(s.source)
+    .map(m => `<div class="warn">${withIcon("exclamation-triangle", m)}</div>`).join("");
+  if (row.warns.innerHTML !== warns) row.warns.innerHTML = warns;
+
+  // The picker is rebuilt only when it would come out different, because rebuilding it
+  // is what used to eat a button reading "Starting…" a second after it was tapped.
+  const ap = airplayPicker(s.source);
+  if (row.apSig !== ap) {
+    row.apSig = ap;
+    row.ap.innerHTML = ap;
+    row.ap.querySelectorAll("[data-airplay]").forEach(bindAirplay);
+  }
+
+
+  if (openLogs.has(s.source)) {
+    row.log.hidden = false;
+    setLabel(row.logBtn, "Hide log", "eye-slash");
+    fillLog(row);
+  }
+}
+
+// The row is a place, not a URL: the site a stream came from is what tells two of them
+// apart at a glance, and it fits on a phone where the URL does not.
+function hostOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return url; }
+}
+
+// A playback URL is a host, a token and a path, and the token is the part that tells
+// two streams apart -- so when the row has no room for all of it, the middle goes
+// rather than the end. The whole of it stays in the title and in Details.
+function middle(text, budget) {
+  if (text.length <= budget || budget < 16) return text;
+  const head = Math.ceil((budget - 1) / 2);
+  return text.slice(0, head) + "\u2026" + text.slice(text.length - (budget - 1 - head));
+}
+
+function fitUrl(node) {
+  const whole = node.dataset.full || "";
+  const width = node.clientWidth || (node.parentElement && node.parentElement.clientWidth) || 0;
+  node.textContent = middle(whole, Math.max(24, Math.floor(width / 8.4)));
+}
+
+let fitTimer = null;
+addEventListener("resize", () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => rows.forEach(row => fitUrl(row.url)), 150);
+});
+
+// What the player page reports, as a line for someone who is not reading a log. The
+// raw line stays in Details, because the fields are the thing worth having when a
+// stream is misbehaving.
+const PLAYER_EVENT = {
+  playing: "Playing", play: "Playing", tick: "Playing", canplay: "Ready to play",
+  loadedmetadata: "Loading", waiting: "Buffering", stalled: "Buffering",
+  suspend: "Waiting", pause: "Paused", ended: "Finished", emptied: "Stopped",
+  error: "The player reported an error", "airplay-changed": "AirPlay route changed",
+};
+
+function humanPlayer(line) {
+  const m = /\[player\]\s+(\S+)\s*(.*)$/.exec(line || "");
+  if (!m) return "";
+  const fields = {};
+  m[2].trim().split(/\s+/).forEach(pair => {
+    const i = pair.indexOf("=");
+    if (i > 0) fields[pair.slice(0, i)] = pair.slice(i + 1);
+  });
+  let what = PLAYER_EVENT[m[1]] || m[1];
+  if (fields.paused === "1" && m[1] !== "error") what = "Paused";
+  if (fields.air === "1") what += " on an AirPlay receiver";
+  const at = Number(fields.t);
+  const where = Number.isFinite(at) && at > 0
+    ? `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, "0")} in` : "";
+  // The stamp on the line is the proxy's clock, not this phone's. Turning it into "3
+  // seconds ago" would be arithmetic across two clocks that need not agree, so it is
+  // shown as the time it is.
+  const stamp = /^(\d\d:\d\d:\d\d)/.exec(line);
+  return [what, where, stamp ? "last heard " + stamp[1] : ""].filter(Boolean).join(" \u00b7 ");
+}
+
+// The whole proxy log, not just the [player] lines the row already shows: when a
+// stream will not start, the reason is usually a line nobody thought to look for.
+const openLogs = new Set();
+
+async function fillLog(row) {
+  row.log.hidden = false;
+  // Refilling resets the scroll, which on an open log is the person's place in it.
+  // Follow the tail only for someone already at the tail.
+  const atEnd = row.log.scrollTop + row.log.clientHeight >= row.log.scrollHeight - 4;
+  const place = row.log.scrollTop;
+  let text;
+  try {
+    const r = await (await fetch("/api/log?player=0&source=" + encodeURIComponent(row.source))).json();
+    text = (r.lines || []).join("\n") || "(nothing logged yet)";
+  } catch (e) {
+    text = String((e && e.message) || e);
+  }
+  if (row.log.textContent === text) return;
+  row.log.textContent = text;
+  row.log.scrollTop = atEnd ? row.log.scrollHeight : place;
+}
+
+// Errors live in state, not on the button. The card is re-rendered wholesale every
+// few seconds, and a message written onto a button does not survive that -- which
+// meant a failure could vanish before it had been read.
+//
+// Keyed by stream *and* receiver, because a receiver that pairs happily and then
+// refuses the hand-off is a thing that happens: one message per stream would let the
+// working television's row hide the failing one's reason.
+const actionErrors = new Map();
+const errorKey = (source, receiver) => source + "\u0000" + (receiver || "");
+const errorsFor = (source) => [...actionErrors]
+  .filter(([key]) => key.slice(0, key.indexOf("\u0000")) === source)
+  .map(([, message]) => message);
+
+// A tap that ends something asks once, in the label, because a confirm dialog on a
+// phone is a second thing to aim at. The question goes back to being a button on its
+// own after a moment: a page left mid-question in a pocket should not be one tap away
+// from stopping a stream an hour later.
+function arm(button, question, run) {
+  if (button.dataset.armed === "1") {
+    disarm(button);
+    run();
+    return;
+  }
+  button.dataset.armed = "1";
+  button.classList.add("armed");
+  button.dataset.idle = labelOf(button);
+  setLabel(button, question);
+  button.dataset.timer = String(setTimeout(() => disarm(button), 3000));
+}
+
+function disarm(button) {
+  if (button.dataset.armed !== "1") return;
+  clearTimeout(Number(button.dataset.timer));
+  setLabel(button, button.dataset.idle || labelOf(button));
+  button.dataset.armed = "";
+  button.classList.remove("armed");
+}
+
+// --------------------------------------------------------------------------- AirPlay
+
+// One button per paired receiver, and one Stop per receiver already playing this
+// stream -- a session is per (stream, receiver), so two televisions showing the same
+// thing are two buttons rather than one that has to guess. A remembered receiver that
+// did not answer gets no button either: it is on the list to be reported on, and the
+// server would refuse the hand-off. Unpaired receivers are not
+// offered here: pairing is its own flow, in its own card below.
+function airplayPicker(source, url) {
+  if (!airplayAvailable) return "";
+  const live = (airplaySessions[source] || []);
+  const playing = new Set(live.map(session => session.address));
+  const stop = live.map(session => airplayButton(source, url, session.address,
+                                                 "Stop " + session.device, true));
+  const start = airplayReceivers
+    .filter(receiver => receiver.paired && receiver.seen
+                        && !playing.has(receiver.address))
+    .map(receiver => airplayButton(source, url, receiver.address,
+                                   receiver.name, false));
+  return stop.concat(start).join("");
+}
+
+// The glyph is the AirPlay mark itself -- a screen with the beam under it -- and not
+// the typographic triangle that used to stand in for it, which read as a bullet point.
+// It is the shape somebody's eye is hunting for in a row of buttons in front of a
+// television, and it stays the same on the button that ends a hand-off: that button is
+// the AirPlay control for a receiver already playing, and the stream's own Stop is
+// beside it wearing the stop glyph. The word on the button is what tells them apart.
+function airplayButton(source, url, address, label, on) {
+  return `<button class="ghost" data-icon="airplay" data-airplay="${esc(source)}"
+    data-receiver="${esc(address)}" data-on="${on ? "1" : ""}"${
+    url ? ` data-url="${esc(url)}"` : ""} title="AirPlay${
+    on ? " — stop" : ""}">${withIcon("airplay", label)}</button>`;
+}
+
+// The hand-off holds a session open, so the button toggles: the same receiver that
+// took the stream is the one asked to give it back.
+function bindAirplay(button) {
+  button.onclick = async () => {
+    const source = button.dataset.airplay;
+    const receiver = button.dataset.receiver;
+    const on = button.dataset.on === "1";
+    const idle = labelOf(button);
+    actionErrors.delete(errorKey(source, receiver));
+    button.disabled = true;
+    setLabel(button, on ? "Stopping\u2026" : "Starting\u2026");
+    let res = {};
+    try {
+      res = await (await fetch("/api/airplay", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: on ? "stop" : "start", source, receiver,
+                              url: button.dataset.url || ""})})).json();
+    } catch (e) { res = {error: String(e)}; }
+    if (res.error) actionErrors.set(errorKey(source, res.receiver || receiver), res.error);
+    // Rows now survive a refresh, so a hand-off that failed would leave this button
+    // reading "Starting…" for ever. Put it back; a hand-off that worked changes the
+    // picker underneath it anyway.
+    button.disabled = false;
+    setLabel(button, idle);
+    await refreshAirplay();
+    if (lastResult && lastResult.playlist === source) showResult(lastResult);
+    loadStreams();
+  };
+}
+
+// A remembered receiver is listed whatever the scan made of it, so the row has to say
+// which of three things it is: ready, silent, or a television that has been reset and
+// no longer knows us. Only the last two are news, so only they are coloured.
+function receiverState(receiver) {
+  if (!receiver.seen) return `<span class="muted warn">${withIcon("no-symbol", "No answer")}</span>`;
+  if (receiver.paired) return `<span class="live">${withIcon("check-circle", "Paired")}</span>`;
+  if (receiver.remembered) {
+    return `<span class="warn">${
+              withIcon("exclamation-triangle", "Not paired any more")}</span>
+            <button class="ghost" data-icon="link" data-pair="${esc(receiver.address)}">${
+              withIcon("link", "Pair again")}</button>`;
+  }
+  return `<button class="ghost" data-icon="link" data-pair="${esc(receiver.address)}">${
+            withIcon("link", "Pair")}</button>`;
+}
+
+// available:false is two different facts wearing one flag. pyatv may be missing on the
+// server; or this client is one the server will not hand a television to -- loopback,
+// or an address outside the LAN it advertises. The page can tell the loopback case
+// apart on its own, and nothing else can, so that is the one it names.
+function airplayOff() {
+  const here = location.hostname;
+  if (here === "localhost" || here === "127.0.0.1" || here === "::1" || here === "[::1]") {
+    return "This is the machine running the app, so the hand-off controls are off here. "
+         + "Open this page from a phone on the same Wi-Fi to send a stream to a TV.";
+  }
+  return "AirPlay hand-off is off: pyatv is not installed on the server, or this device "
+       + "is not on the LAN the app advertises.";
+}
+
+// Pairing, which is the one step between a fresh deploy and any of this working, and
+// which used to be a shell inside the container. Two requests, because the receiver
+// shows its PIN only once pairing has begun -- so the card has two shapes, and the
+// server's `pairing` tells us which to draw after a reload.
+//
+// The card itself is never hidden. Hiding it meant the one feature this app exists for
+// was, to anyone who had not already got it working, not there at all.
+function renderAirplay() {
+  $("pairhint").hidden = !(airplayAvailable && !airplayPairing
+                           && !airplayReceivers.some(r => r.paired));
+  if (!airplayAvailable) {
+    $("airplay").innerHTML = `<div class="muted note">${ico("no-symbol")}<span>${
+      esc(airplayOff())}</span></div>`;
+    return;
+  }
+  const rows = airplayReceivers.map(receiver => `
+    <div class="line">
+      <div class="what">
+        <div class="who">${esc(receiver.name)}</div>
+        <code>${esc(receiver.address)}</code>
+      </div>
+      <div class="row acts">
+        ${receiverState(receiver)}
+        ${receiver.remembered
+          ? `<button class="ghost" data-icon="trash" data-forget="${esc(receiver.address)}">${
+              withIcon("trash", "Forget")}</button>`
+          : ""}
+      </div>
+    </div>`).join("");
+
+  // Anything that refreshes this card rewrites it, PIN field included, and a PIN
+  // half-typed when some other button was tapped would otherwise go with it.
+  const typed = $("pin") ? $("pin").value : "";
+  const waiting = airplayPairing ? `
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="pin" inputmode="numeric" autocomplete="one-time-code"
+             aria-label="PIN shown on ${esc(airplayPairing.device)}"
+             placeholder="PIN on ${esc(airplayPairing.device)}"
+             style="flex:1 1 160px;min-width:0;background:var(--well)">
+      <button id="pinOk" data-icon="link">${withIcon("link", "Pair")}</button>
+      <button class="ghost" id="pinNo" data-icon="x-mark">${withIcon("x-mark", "Cancel")}</button>
+    </div>` : "";
+
+  $("airplay").innerHTML = (rows || `<div class="muted">No receiver answered. Set
+      PWS_AIRPLAY_HOST, or sweep the LAN for one.</div>`) + waiting
+    + (pairError ? `<div class="warn">${withIcon("exclamation-triangle", pairError)}</div>` : "")
+    + `<div class="row" style="margin-top:12px">
+         <button class="ghost" id="apscan" data-icon="magnifying-glass">${
+           withIcon("magnifying-glass", "Sweep the LAN")}</button>
+         <span class="muted">Every address on this /24, which takes a moment.</span>
+       </div>
+       <details>
+         <summary>${ico("chevron-right")}What a sweep is for</summary>
+         <div class="pad muted">Named and remembered receivers are looked at on every
+           page load already, and once when the app starts &mdash; a sweep is for a
+           television this app has never been told about. Forgetting one drops its
+           address; its credentials stay, so a later sweep finds it already paired.</div>
+       </details>`;
+
+  $("airplay").querySelectorAll("[data-pair]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    setLabel(b, "Asking\u2026");
+    await pairPost({action: "begin", host: b.dataset.pair});
+  });
+
+  // Forgetting drops the address, not the credentials: a later sweep that finds the
+  // television again finds it paired. Say so, so the button is not mistaken for one.
+  $("airplay").querySelectorAll("[data-forget]").forEach(b =>
+    b.onclick = () => arm(b, "Forget? tap again", async () => {
+      b.disabled = true;
+      setLabel(b, "Forgetting\u2026");
+      pairError = "";
+      let res = {};
+      try {
+        res = await (await fetch("/api/airplay/forget", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({receiver: b.dataset.forget})})).json();
+      } catch (e) { res = {error: String(e)}; }
+      if (res.error) pairError = res.error;
+      else airplayReceivers = res.receivers || [];
+      renderAirplay();
+      loadStreams();      // one button per stream has just gone
+    }));
+
+  const ok = $("pinOk"), no = $("pinNo"), pin = $("pin");
+  if (pin) { pin.value = typed; pin.focus(); }
+  if (ok) ok.onclick = async () => {
+    ok.disabled = true;
+    setLabel(ok, "Pairing\u2026");
+    await pairPost({action: "finish", pin: pin.value});
+  };
+  if (pin) pin.onkeydown = (ev) => { if (ev.key === "Enter" && ok) ok.click(); };
+  if (no) no.onclick = () => pairPost({action: "cancel"});
+
+  $("apscan").onclick = async () => {
+    // The tap can land on the glyph inside the button rather than the button, and
+    // ev.target is then an <svg> with nothing to disable. Take it by name.
+    const button = $("apscan");
+    button.disabled = true;
+    setLabel(button, "Sweeping\u2026");
+    pairError = "";
+    await refreshAirplay(true);
+  };
+}
+
+async function pairPost(body) {
+  pairError = "";
+  let res = {};
+  try {
+    res = await (await fetch("/api/airplay/pair", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)})).json();
+  } catch (e) { res = {error: String(e)}; }
+  if (res.error) pairError = res.error;
+  await refreshAirplay();
+  loadStreams();          // a freshly paired receiver is a new button on every stream
+}
+
+let airplayAvailable = false;
+let airplayReceivers = [];
+let airplaySessions = {};
+let airplayPairing = null;
+let pairError = "";
+let lastResult = null;
+// Focus the field only where there is a mouse. On a phone it put a keyboard over half
+// the page on every load, and the phone is as likely to be here to stop a stream or
+// pair a television as to paste anything.
+// The last URL resolved comes back in the field, because the usual reason to open this
+// page again is that the stream it gave timed out. It arrives selected, so pasting a
+// different one replaces it rather than landing on the end of it.
+const lastUrl = remembered("url");
+if (lastUrl && !$("url").value) $("url").value = lastUrl;
+$("url").addEventListener("focus", () => {
+  if (lastUrl && $("url").value === lastUrl) {
+    // iOS places the caret after the focus event, so the selection has to wait for it.
+    setTimeout(() => $("url").setSelectionRange(0, $("url").value.length), 0);
+  }
+});
+if (matchMedia("(pointer: fine)").matches) $("url").focus();
+
+// Where upstream fetches leave from. Worth a line on the page rather than only in the
+// log: somebody watching a stream has no other way to tell whether the tunnel they set
+// up is the one the origin is seeing, and a tunnel that quietly stopped looks from here
+// exactly like one that is working.
+function showEgress(e) {
+  const el = $("egress");
+  if (!e || !e.enabled) return;
+  el.hidden = false;
+  if (e.error) {
+    el.className = "warn note";
+    el.innerHTML = withIcon("exclamation-triangle",
+      `Upstream proxy ${e.proxy} is not answering (${e.error}). `
+      + "Streams will not resolve until it does.");
+    return;
+  }
+  el.className = "muted note";
+  el.innerHTML = withIcon("globe-alt",
+    `Upstream via ${e.proxy}${e.ip ? ` \u2014 origins see ${e.ip}` : ""}`
+    + (e.forced ? "" : " \u2014 a stream needing no rewriting is still fetched by the player itself."));
+}
+
+Promise.allSettled([
+  fetch("/api/egress").then(r => r.json()).then(showEgress),
+  // No sweep here. Named receivers are a handful of unicast probes the server caches;
+  // the /24 is the button in the card, because 254 of them is not a page load.
+  refreshAirplay(false),
+]).then(loadStreams);
+setInterval(loadStreams, 10000);
+// A phone taken out of a pocket should show what is running now, not what was running
+// up to ten seconds ago -- which is often the stream it just stopped from the sofa.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") loadStreams();
+});
+</script>

@@ -1,0 +1,25 @@
+# Tooling config only. hls_proxy.py is deliberately not a package: it is a single file
+# that runs from anywhere with nothing installed, and the skill depends on that.
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "C4", "PIE", "RET", "SIM"]
+ignore = [
+  "B008",     # calls in argument defaults; argparse does this everywhere
+  "SIM105",   # contextlib.suppress reads worse than try/except OSError here
+  "RET504",   # a named result before a return is often the clearer line
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["airplay", "airplay_protocol", "browser_find", "conftest",
+                     "hls_proxy", "origin", "resolve", "tunnel", "webapp"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]

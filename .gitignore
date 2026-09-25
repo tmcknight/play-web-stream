@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+# docker compose reads .env from beside the compose file, and that is where the VPN
+# credentials go. Ignored before it is ever written, not after.
+.env
+.env.local
+.playwright-mcp/
+.DS_Store
+pyatv.conf
+receivers.json*
