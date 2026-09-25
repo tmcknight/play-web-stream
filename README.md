@@ -127,23 +127,24 @@ python3 -m venv .venv
 | `PWS_FORCE_PROXY` | on with `PWS_EGRESS_PROXY` | Proxy streams even when they need no fixing |
 
 Each stream has its own proxy and port, so the port range sets how many streams can
-run. When it is full, the Resolve button says which stream to stop. Restarting the
-container ends all streams.
+run. When it is full, the page says so and **Find video** is disabled until a stream
+under *On now* is stopped. Restarting the container ends all streams.
 
 ### AirPlay it to a television
 
-Each running stream gets a **▲ *name*** button per paired receiver. The hand-off uses
-`airplay_protocol.py` and keeps the session open; the button then reads **Stop *name***.
-Sessions are per stream *and* per receiver.
+A found stream leads with **Play on *name*** for the receiver used last, and each
+stream under *On now* gets a button per paired receiver. The hand-off uses
+`airplay_protocol.py` and keeps the session open; the button then reads **Stop on
+*name***. Sessions are per stream *and* per receiver.
 
-**Pairing** is once per receiver, in the *AirPlay receivers* card: press **Pair** and
-type in the PIN the television shows. The pairing handler stays open between the two
+**Pairing** is once per receiver, on the *TVs* screen (the pill at the top right):
+press **Pair** and type in the PIN the television shows. The pairing handler stays open between the two
 requests and times out if unfinished. Credentials go to `/config/pyatv.conf`, or
 `~/.config/play-web-stream/pyatv.conf` from a checkout.
 
 **Finding receivers.** mDNS doesn't cross the Docker bridge, so addresses in
-`PWS_AIRPLAY_HOST` are probed on each page load and cached. **Sweep the LAN** probes all
-254 addresses on the advertised `/24` (it takes a moment). Paired receivers are saved to
+`PWS_AIRPLAY_HOST` are probed on each page load and cached. **Look for more TVs** probes
+all 254 addresses on the advertised `/24` (up to a minute). Paired receivers are saved to
 `receivers.json` beside `pyatv.conf`, since pyatv doesn't record addresses, so one sweep
 is enough. Remembered addresses are probed and listed at startup:
 

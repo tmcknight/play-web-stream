@@ -115,7 +115,7 @@ def start_proxy(source, referer, handshake="python"):
     if room["used"] >= room["limit"]:
         raise resolver.ResolveError(
             "All %d stream slots are in use." % room["limit"],
-            "Stop one under Running and try again. The limit is the range of ports "
+            "Stop one under On now and try again. The limit is the range of ports "
             "published to this machine, so a further stream would serve on a port "
             "nothing forwards.")
 
@@ -565,7 +565,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Cancel on the page only closes the event stream. Without this check the
         # resolve went on and started a proxy nobody wanted, which then appeared under
-        # Running. Each stage checks and stops.
+        # On now. Each stage checks and stops.
         def progress(message):
             if self._client_gone():
                 raise ClientGone()
