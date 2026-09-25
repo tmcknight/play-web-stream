@@ -1,9 +1,8 @@
-"""Where our upstream fetches leave from, and what stays on this network.
+"""Where upstream fetches leave from, and what stays on this network.
 
-The point of the feature is an address: with a proxy set, a stream origin sees the
-proxy and not this house. So the tests that matter are the ones that watch a request
-arrive somewhere -- at the proxy for an origin, at the origin itself for the LAN --
-rather than ones that read the configuration back.
+With a proxy set, an origin should see the proxy's address, not this network's. So
+these tests watch where requests arrive (the proxy for an origin, the origin itself
+for the LAN) instead of reading the configuration back.
 """
 
 import http.server
@@ -19,20 +18,20 @@ import hls_proxy
 import resolve as resolver
 from origin import FakeOrigin, free_port
 
-EXIT_IP = "203.0.113.7"          # what the proxy says our address is, when asked
+EXIT_IP = "203.0.113.7"          # the address the proxy reports for us
 
 
 class RecordingProxy:
-    """An HTTP proxy that forwards absolute-URI GETs to one origin, and says who asked.
+    """A minimal HTTP proxy that forwards absolute-URI GETs to one origin and records
+    them.
 
-    Enough of a proxy for urllib to talk to, and no more: the destination host never
-    resolves, which is itself the assertion -- a request that reached here was one the
-    client refused to make for itself.
+    Test hostnames never resolve, so any request that arrives here was one the client
+    sent through the proxy.
     """
 
     def __init__(self, upstream):
         self.upstream = upstream        # http://127.0.0.1:port of the fake origin
-        self.seen = []                  # every absolute URI asked of us, in order
+        self.seen = []                  # absolute URIs requested, in order
         self._server = None
         self._thread = None
 
@@ -48,7 +47,7 @@ class RecordingProxy:
             def do_GET(self):
                 proxy.seen.append(self.path)
                 parts = urllib.parse.urlsplit(self.path)
-                if not parts.scheme:                  # a relative path is not proxying
+                if not parts.scheme:                  # not a proxy request
                     self.send_error(400, "absolute URI expected")
                     return
                 if parts.path == "/echo-ip":          # stands in for the probe service
@@ -93,7 +92,7 @@ class RecordingProxy:
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
-    """No test inherits the runner's own proxy settings, or leaves any behind."""
+    """Clear the runner's proxy settings for every test."""
     for name in hls_proxy.PROXY_ENV + ("no_proxy", "NO_PROXY", "PWS_FORCE_PROXY",
                                        "PWS_EGRESS_PROBE_URL"):
         monkeypatch.delenv(name, raising=False)
@@ -157,7 +156,7 @@ def test_no_proxy_adds_hosts_to_the_direct_side(monkeypatch):
 # -------------------------------------------------------------------- what urllib does
 
 def test_an_origin_is_fetched_through_the_proxy(monkeypatch):
-    """The host never resolves, so arriving at all proves the proxy carried it."""
+    """The host never resolves, so the request can only have come via the proxy."""
     with FakeOrigin() as origin, RecordingProxy(origin.url) as proxy:
         monkeypatch.setenv("PWS_EGRESS_PROXY", proxy.url)
         body = hls_proxy.fetch("http://origin.invalid/video.m3u8")[0]
@@ -166,7 +165,7 @@ def test_an_origin_is_fetched_through_the_proxy(monkeypatch):
 
 
 def test_the_lan_is_fetched_directly_even_with_a_proxy_set(monkeypatch):
-    """A proxy on a tunnel cannot route back to 127.0.0.1, and should never be asked to."""
+    """A proxy on a tunnel cannot route back to 127.0.0.1."""
     with FakeOrigin() as origin, RecordingProxy(origin.url) as proxy:
         monkeypatch.setenv("PWS_EGRESS_PROXY", proxy.url)
         body = hls_proxy.fetch(origin.url + "/video.m3u8")[0]
@@ -175,7 +174,7 @@ def test_the_lan_is_fetched_directly_even_with_a_proxy_set(monkeypatch):
 
 
 def test_the_header_probe_goes_through_the_proxy_too(monkeypatch):
-    """probe_profiles ran on urlopen's own opener once, which was a hole in this."""
+    """probe_profiles once used urlopen's default opener and bypassed the proxy."""
     with FakeOrigin() as origin, RecordingProxy(origin.url) as proxy:
         monkeypatch.setenv("PWS_EGRESS_PROXY", proxy.url)
         results = hls_proxy.probe_profiles("http://origin.invalid/video.m3u8")
@@ -184,7 +183,7 @@ def test_the_header_probe_goes_through_the_proxy_too(monkeypatch):
 
 
 def test_no_proxy_wins_over_a_proxy_that_is_set(monkeypatch):
-    """A star in no_proxy turns the whole thing off without unsetting anything."""
+    """no_proxy=* disables the proxy without unsetting it."""
     monkeypatch.setenv("PWS_EGRESS_PROXY", "http://127.0.0.1:%d" % free_port())
     monkeypatch.setenv("no_proxy", "*")
     with FakeOrigin() as origin:
@@ -194,7 +193,7 @@ def test_no_proxy_wins_over_a_proxy_that_is_set(monkeypatch):
 
 @pytest.mark.skipif(not hls_proxy.handshake_available(), reason="curl_cffi is not installed")
 def test_the_browser_handshake_leaves_through_the_proxy_too(monkeypatch):
-    """The second client in this process has to agree with the first about the door."""
+    """curl_cffi must use the same proxy as urllib."""
     monkeypatch.setattr(hls_proxy, "_browser", None)
     monkeypatch.setattr(hls_proxy, "_browser_for", None)
     with FakeOrigin() as origin, RecordingProxy(origin.url) as proxy:
@@ -220,7 +219,7 @@ def test_the_browser_is_handed_nothing_when_there_is_no_proxy():
 
 
 def test_the_browser_fallback_launches_with_it(monkeypatch):
-    """Without this the one step that loads the origin's page would leave from here."""
+    """Otherwise the headless browser would load the origin's page from this address."""
     launched = {}
 
     class FakeChromium:
@@ -273,7 +272,7 @@ def _stub_resolver(monkeypatch, referer=None, match=True):
 
 
 def test_a_clean_stream_is_served_here_when_the_egress_proxy_is_on(monkeypatch):
-    """Otherwise the Apple TV fetches the origin itself, from this network's address."""
+    """Otherwise the Apple TV fetches from the origin directly, from this address."""
     _stub_resolver(monkeypatch)
     monkeypatch.setenv("PWS_EGRESS_PROXY", "http://vpn.lan:8888")
     verdict = resolver.resolve("https://origin.example/video.m3u8", allow_browser=False)
@@ -317,5 +316,5 @@ def test_the_check_asks_nothing_at_all_when_there_is_no_proxy(monkeypatch):
 
 
 def test_a_socket_never_leaves_for_the_probe_when_the_proxy_is_unset():
-    """The direct question is the one thing this feature must never ask."""
+    """Asking the probe service directly would reveal this network's address."""
     assert hls_proxy.egress_check()["ip"] == ""

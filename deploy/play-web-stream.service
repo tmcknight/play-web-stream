@@ -10,26 +10,26 @@ WorkingDirectory=__DIR__
 ExecStart=__DIR__/.venv/bin/python __DIR__/webapp.py --port 8786
 Restart=on-failure
 RestartSec=3
-# The proxies are deliberately detached children with their own idle timeout, so
-# they must outlive a restart of this unit.
+# The proxies are detached children with their own idle timeout, and must survive a
+# restart of this unit.
 KillMode=process
 
-# Upstream fetches leave through whatever this names, so stream origins see its address
-# rather than this connection's; the LAN is still reached directly. Any HTTP proxy will
-# do -- docker-compose.vpn.yml stands one up on a VPN. Named this way rather than as
-# https_proxy on purpose: see "Keep your address private" in README.md.
+# Upstream fetches go through this proxy, so stream origins see its address instead
+# of this connection's. The LAN is still reached directly. Any HTTP proxy works;
+# docker-compose.vpn.yml sets one up on a VPN. For why this is not https_proxy, see
+# "Keep your address private" in README.md.
 #Environment=PWS_EGRESS_PROXY=http://127.0.0.1:8888
 
-# Under Docker the container is the boundary. Installed this way there is no
-# container, so these are it: the app runs as you, on your box, and drives a real
-# browser over whatever page it is pointed at. See "What the container is holding"
-# in SECURITY.md -- this is the same posture, by the other mechanism.
+# Under Docker the container is the boundary. Installed this way there is none, so
+# these settings replace it: the app runs as you and drives a real browser over
+# arbitrary pages. This matches the container setup described in "What the container
+# is holding" in SECURITY.md.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-# The one thing it writes: AirPlay credentials, once per receiver. install.sh
-# creates this, and the unit fails loudly rather than quietly at pairing time if
-# it is missing.
+# The only writable path: AirPlay credentials, once per receiver. install.sh
+# creates it. If it is missing the unit fails to start, instead of pairing failing
+# later.
 ReadWritePaths=__HOME__/.config/play-web-stream
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -45,33 +45,31 @@ ProtectKernelLogs=true
 ProtectProc=invisible
 RestrictRealtime=true
 SystemCallArchitectures=native
-# 0077, because pyatv writes the paired credentials itself and the mode they land
-# with is its business, not ours. The proxies' own files are opened 0600 already.
+# 0077 because pyatv writes the paired credentials itself and we do not control
+# their mode. The proxies already open their own files 0600.
 UMask=0077
 
-# Three that look like they belong here and do not:
+# Not set, because each one breaks the app:
 #
-#   PrivateTmp=      A fresh /tmp per start. The detached proxies keep serving out
-#                    of the old one, so a restarted app cannot see -- or stop --
-#                    the streams it is still serving. KillMode=process above is
-#                    the same decision seen from the other side.
+#   PrivateTmp=      A fresh /tmp per start. The detached proxies keep using the old
+#                    one, so a restarted app could not see or stop its own streams.
+#                    Same reason as KillMode=process above.
 #   RestrictNamespaces=
-#                    Chromium's own sandbox is user namespaces. Unlike in the
-#                    container, here it is on and worth having; this would turn it
-#                    off without saying so.
+#                    Chromium's sandbox uses user namespaces. Here, unlike in the
+#                    container, it is on and useful; this would disable it with no
+#                    error.
 #   SystemCallFilter=
-#                    A browser's syscalls are nothing like a service's. It dies at
-#                    launch, and the message does not say why.
+#                    A browser needs syscalls a normal service does not. Chromium
+#                    dies at launch with an unhelpful message.
 #   RestrictAddressFamilies=
-#                    Same story one layer down: netlink for network-change
-#                    detection, unix sockets between Chromium's own processes.
+#                    Chromium needs netlink for network-change detection and unix
+#                    sockets between its own processes.
 #   ProcSubset=pid   Chromium reads /proc/cpuinfo and /proc/meminfo to size itself.
 #   MemoryDenyWriteExecute=
-#                    V8 compiles JavaScript to memory it then executes. That is
-#                    what a JIT is.
+#                    V8's JIT writes compiled JavaScript to memory and executes it.
 #
-# MemoryMax=2G       Available if wanted. Left off because the kill lands on the
-#                    whole app, streams included.
+# MemoryMax=2G       Optional. Left off because the OOM kill takes the whole app,
+#                    streams included.
 
 [Install]
 WantedBy=multi-user.target

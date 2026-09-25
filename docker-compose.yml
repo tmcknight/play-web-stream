@@ -1,9 +1,9 @@
 # Deploy as a Portainer stack (Stacks -> Add stack -> Repository, or paste this in).
 #
-# Host networking is the default on purpose. For HLS, AirPlay does not restream: Safari
-# hands the media URL to the Apple TV, which fetches it itself. So the URL the app gives
-# out has to carry a LAN address, and under bridge networking the container only knows
-# its address on the docker bridge.
+# Host networking is the default. For HLS, AirPlay does not restream: Safari hands the
+# media URL to the Apple TV, which fetches it itself. That URL has to carry a LAN
+# address, and under bridge networking the container only knows its docker bridge
+# address.
 
 name: play-web-stream
 
@@ -14,53 +14,51 @@ services:
     # image: ghcr.io/tmcknight/play-web-stream:latest
     container_name: play-web-stream
     network_mode: host
-    # Chromium's own sandbox is off inside the container (see CHROMIUM_NO_SANDBOX in
-    # the Dockerfile): switching it on would mean handing the container back the user
-    # namespaces Docker's seccomp profile withholds, which loosens the boundary to
-    # tighten what sits inside it. These go the other way instead -- nothing to
-    # escalate to, no capabilities to use, and nothing writable but the paths that
-    # have to be. They matter because the fallback resolver drives a real browser
-    # over whatever page it is pointed at.
+    # Chromium's sandbox is off in the container (see CHROMIUM_NO_SANDBOX in the
+    # Dockerfile). Turning it on would mean giving back the user namespaces Docker's
+    # seccomp profile withholds, loosening the outer boundary. These settings tighten
+    # it instead: no privilege escalation, no capabilities, and nothing writable except
+    # the paths that must be. The fallback resolver drives a real browser over
+    # arbitrary pages, so this matters.
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true
     tmpfs:
-      # Chromium's profile, and the proxies' state files -- which name a token and a
-      # pid, and so are written 0600 into a directory only this user owns.
+      # Chromium's profile and the proxies' state files. Those name a token and a pid,
+      # so they are written 0600 into a directory only this user owns.
       - /tmp:size=256m,mode=1777
-      # $HOME. Chromium writes its caches and crash dumps here whatever else it is told.
+      # $HOME. Chromium writes caches and crash dumps here regardless of its flags.
       - /home/app:size=64m,mode=1777
     pids_limit: 512
-    # A runaway is capped rather than left to take the host down with it. Raise it if
-    # a full house of streams plus the browser ever gets close; an OOM kill lands on
-    # the whole container, so this is deliberately loose.
+    # Caps a runaway before it takes the host down. Kept loose because an OOM kill
+    # takes the whole container; raise it if many streams plus the browser get close.
     mem_limit: 2g
     restart: unless-stopped
     shm_size: 256m          # chromium crashes on the default 64m
     volumes:
       - pyatv:/config           # AirPlay credentials and remembered receivers,
-                                #   so pairing and finding are each once per receiver
+                                #   so each receiver is found and paired once
     environment:
       PWS_PORT: "8786"
       # PWS_WINDOW: "12"         # segments to advertise; raise if a stream stalls
       # PWS_ADVERTISE_IP: ""     # only needed with docker-compose.bridge.yml
-      # Receiver addresses, comma-separated. Optional, and rarely worth setting: the
-      # app's AirPlay card sweeps this /24 for receivers, pairs with them, and writes
-      # the addresses to /config, so the sweep is a one-off rather than a per-deploy
-      # cost. Naming one here pins it -- and makes it one the card cannot forget.
+      # Receiver addresses, comma-separated. Optional and rarely needed: the AirPlay
+      # card sweeps this /24, pairs with what it finds, and saves the addresses to
+      # /config, so the sweep happens once. An address set here is pinned and the card
+      # cannot forget it.
       PWS_AIRPLAY_HOST: "${PWS_AIRPLAY_HOST:-}"
-      # Hostnames this app answers to, comma-separated. Leave it empty unless
-      # you reach it by name rather than by address: an address cannot be
-      # repointed at us by somebody else's DNS, and a name can. See SECURITY.md.
+      # Hostnames this app answers to, comma-separated. Leave empty unless you reach
+      # it by name. Someone else's DNS can repoint a name at us but not an address.
+      # See SECURITY.md.
       PWS_ALLOW_HOSTS: "${PWS_ALLOW_HOSTS:-}"
       PWS_AIRPLAY_TIMING_PORT: "${PWS_AIRPLAY_TIMING_PORT:-49170}"
-      # PTP, then NTP if the receiver refuses it. tvOS 26.5 and later go quiet on NTP.
+      # PTP, then NTP if the receiver refuses it. tvOS 26.5 and later ignore NTP.
       PWS_AIRPLAY_TIMING: "${PWS_AIRPLAY_TIMING:-auto}"
       # Send every upstream fetch through a proxy, so stream origins see its address
-      # rather than this network's. docker-compose.vpn.yml stands one up on a VPN and
-      # sets both of these; they are here because any HTTP proxy will do.
+      # instead of this network's. docker-compose.vpn.yml sets up one on a VPN and
+      # sets both of these, but any HTTP proxy works.
       # PWS_EGRESS_PROXY: "http://127.0.0.1:8888"
       # PWS_FORCE_PROXY: "1"     # defaults on whenever the above is set
 

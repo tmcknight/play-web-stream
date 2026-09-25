@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Turn a page URL into a URL Safari's native player will actually accept.
+"""Turn a page URL into a URL Safari's native player will accept.
 
-Everything the skill does by hand between "here is a page" and "open this in Safari"
-is mechanical, so it lives here as one pipeline: find the playlist, learn whether the
-origin wants a Referer, check what the segments are really served as, and decide
-whether the stream can be handed over untouched or has to go through hls_proxy.
+The steps the skill does by hand, as one pipeline: find the playlist, learn whether the
+origin needs a Referer, check what the segments are served as, and decide whether the
+stream can be handed over as is or has to go through hls_proxy.
 
-No model in the loop -- every branch below is a string comparison.
+Every branch is a string comparison; no model is involved.
 
     python3 resolve.py <page-url>
 """
@@ -18,8 +17,8 @@ import urllib.parse
 
 import hls_proxy
 
-# Re-serving these achieves nothing: the segments are Widevine/FairPlay encrypted, so
-# AVFoundation would reject them for a reason no proxy can fix.
+# Widevine/FairPlay-encrypted segments. AVFoundation rejects them for a reason no proxy
+# can fix.
 DRM_HOSTS = re.compile(
     r'(^|\.)(youtube\.com|youtu\.be|netflix\.com|disneyplus\.com|primevideo\.com|'
     r'amazon\.[a-z.]+|hulu\.com|max\.com|peacocktv\.com|paramountplus\.com|'
@@ -73,9 +72,8 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
             say("playlist given directly")
             return {"page": None, "playlist": page_url, "referer": check.referer,
                     "method": "direct"}
-        # It looked like a playlist and did not serve one. The detail matters: a 403
-        # means gated or expired, a 404 means the URL is stale, and a 200 of HTML means
-        # it was never a playlist at all.
+        # A 403 means gated or expired, a 404 a stale URL, and a 200 of HTML was never
+        # a playlist.
         raise ResolveError(
             "That URL did not return an HLS playlist -- %s." % check.detail,
             "A 403 or 404 usually means a signed URL that has expired, or an origin "
@@ -87,8 +85,8 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
     try:
         found = hls_proxy.discover_through_gate(page_url)
     except hls_proxy.Gated as exc:
-        # The page is gated, but a real browser -- the fallback below -- may still get
-        # in and find the playlist; if that too is gated, probe_mime will say so.
+        # The browser fallback below may still get past the gate. If it cannot,
+        # probe_mime reports it.
         found, gated = None, exc
     if found:
         found["method"] = "html"
@@ -118,8 +116,8 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
 def probe_mime(playlist, referer):
     """Report what the first segment is served as versus what its bytes say it is.
 
-    AVFoundation refuses a segment whose Content-Type is wrong, which is what produces
-    the crossed-out play icon. A mismatch here is the whole reason the proxy exists.
+    AVFoundation refuses a segment with the wrong Content-Type and shows the
+    crossed-out play icon. A mismatch here is why the proxy exists.
     """
     try:
         body, ctype = hls_proxy.fetch_through_gate(playlist, referer=referer)
@@ -143,9 +141,9 @@ def probe_mime(playlist, referer):
         line = line.strip()
         if line and not line.startswith("#"):
             seg = urllib.parse.urljoin(url, line)
-            # Some origins gate the segments as well as the playlist; the fetch sends
-            # the Referer and drops it again for the origins that object to one. Only
-            # the opening bytes are read -- naming a container does not need the rest.
+            # Some origins gate segments too. fetch_head sends the Referer, and drops it
+            # for origins that object to one. Only the opening bytes are needed to name
+            # the container.
             data, seg_ct = hls_proxy.fetch_head(seg, referer=referer)
             served = (seg_ct or "").split(";")[0].strip().lower()
             sniffed = hls_proxy.sniff_mime(data)
@@ -166,12 +164,10 @@ def probe_mime(playlist, referer):
 def resolve(page_url, allow_browser=True, on_progress=None):
     """Find the stream and say whether it needs the proxy. Starts nothing.
 
-    A client gate met on the way switches hls_proxy to a browser's handshake, and the
-    verdict says so in `handshake`, so the proxy can be started presenting it from its
-    first request. The switch lives inside `handshake_scope()`, which holds it to this
-    thread: it was this origin's need, the next URL through here starts where every one
-    before it did, and a resolve running alongside this one is not dragged along with
-    it -- the web app serves these concurrently.
+    A client gate met on the way switches hls_proxy to a browser's handshake, recorded in
+    `handshake` so the proxy can use it from its first request. `handshake_scope()` keeps
+    the switch to this thread, so the next URL starts fresh and concurrent resolves in the
+    web app are unaffected.
     """
     progress = on_progress or (lambda _msg: None)
 
@@ -179,8 +175,7 @@ def resolve(page_url, allow_browser=True, on_progress=None):
         noted = [hls_proxy.handshake()]
 
         def note():
-            # The switch happens inside hls_proxy, which has no voice here; it is
-            # worth a line of progress the first time it shows.
+            # hls_proxy does not log the switch, so report it the first time it happens.
             if hls_proxy.handshake() != noted[0]:
                 noted[0] = hls_proxy.handshake()
                 progress(BROWSER_NOTE)
@@ -195,18 +190,16 @@ def resolve(page_url, allow_browser=True, on_progress=None):
         note()
         found = dict(found, handshake=hls_proxy.handshake())
 
-    # A correct MIME type is not enough on its own: if the origin demanded a Referer,
-    # Safari cannot send one, so the stream still has to be fetched on its behalf.
+    # Safari cannot send a Referer, so a Referer-gated stream needs the proxy even with
+    # correct MIME types.
     if not mime["match"]:
         reason = "segments served as %s but are really %s" % (mime["served_as"],
                                                               mime["really_is"])
     elif found["referer"]:
         reason = "origin requires a Referer, which Safari will not send"
     elif hls_proxy.force_proxy():
-        # A stream handed over as its own URL is fetched by the player -- or by the
-        # Apple TV the player passed it to -- from this network's address, whatever
-        # this process was careful to do. With an egress proxy on, that is the whole
-        # hiding undone by the one stream that happened to need no fixing.
+        # Handed over directly, the stream is fetched by the player (or the Apple TV)
+        # from this network's address, bypassing the egress proxy.
         reason = "an egress proxy is set, so the stream is fetched here, not by the player"
     else:
         reason = ""

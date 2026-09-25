@@ -1,55 +1,52 @@
-# Keep this network's address out of the stream origins' logs, by sending every upstream
-# fetch through a VPN and nothing else through it at all. It changes where requests come
-# from, not what may be watched: a stream that will not play in your own browser will not
-# play through this either.
+# Keep this network's address out of stream origins' logs by sending every upstream
+# fetch, and nothing else, through a VPN. It changes where requests come from, not what
+# can be watched: a stream that will not play in your own browser will not play here.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
 #
-# The tunnel is a sidecar with an HTTP proxy on it, not a network the app is placed
-# inside. That is deliberate. This app is fetched *from* as much as it fetches: Safari
-# asks it for segments and an Apple TV goes to it directly, so it has to keep a LAN
-# address and answer on the LAN -- which `network_mode: service:gluetun` takes away.
-# A proxy splits it by destination instead: origins through the tunnel, the house direct.
+# The tunnel is a sidecar running an HTTP proxy. The app is not placed inside its
+# network, because the app is fetched from as well as fetching: Safari asks it for
+# segments and an Apple TV connects to it directly. It needs a LAN address and must
+# answer on the LAN, and `network_mode: service:gluetun` would remove that. The proxy
+# splits traffic by destination: origins go through the tunnel, the LAN goes direct.
 #
-# The sidecar is gluetun, which speaks to most commercial providers; VPN_PROVIDER takes
-# any name from its list and defaults to nordvpn. The steps below are Nord's, as the
-# worked example. Other providers issue their wireguard key their own way -- gluetun's
-# wiki has a page for each.
+# The sidecar is gluetun, which supports most commercial providers. VPN_PROVIDER takes
+# any name from its list and defaults to nordvpn. The steps below are for Nord; other
+# providers issue wireguard keys differently, and gluetun's wiki covers each one.
 #
-# Nord's wireguard key is Nord's to issue -- `wg genkey` is not it. Nord shows no key in
-# the dashboard either; it is behind their API, reached with an access token:
+# Nord issues the wireguard key itself (`wg genkey` will not work), and the dashboard
+# does not show it. Get it from their API with an access token:
 #
 #   1. nordaccount.com -> Services -> NordVPN -> Manual setup -> Set up NordVPN manually
-#      -> generate a new access token. Copy it once; it is not shown again.
+#      -> generate a new access token. Copy it now; it is only shown once.
 #   2. Ask their API for the key that token belongs to:
 #
 #        curl -s -u token:<ACCESS_TOKEN> \
 #          https://api.nordvpn.com/v1/users/services/credentials |
 #          python3 -c "import json,sys; print(json.load(sys.stdin)['nordlynx_private_key'])"
 #
-#   3. Put it in a .env beside this file (docker compose reads that by itself, and
-#      .gitignore already keeps it out of the repo):
+#   3. Put it in a .env beside this file (docker compose reads it automatically, and
+#      .gitignore keeps it out of the repo):
 #
 #        VPN_PROVIDER=nordvpn
 #        VPN_PRIVATE_KEY=<the key from step 2>
 #        VPN_COUNTRIES=<the country you are in>
 #
-#      chmod 600 .env -- it is a credential, and the default umask is not.
+#      Run chmod 600 .env. It is a credential and the default umask is too open.
 #
 #      Pick the exit nearest you. A distant one makes origins slower and more
-#      suspicious, not more permissive, and many tie segment URLs to the address that
-#      asked for the page -- which a tunnel on the far side of the world is not.
+#      suspicious. Many also tie segment URLs to the address that requested the page,
+#      which a far-away exit will not match.
 #
-# Under Portainer there is no .env: the same names go in the stack's own environment
-# variables, where Portainer keeps them.
+# Portainer has no .env: put the same names in the stack's environment variables.
 #
-# OpenVPN with a username and password works too, and skips the API: drop VPN_TYPE and
+# OpenVPN with a username and password also works and skips the API. Drop VPN_TYPE and
 # WIREGUARD_PRIVATE_KEY, and set OPENVPN_USER / OPENVPN_PASSWORD to the *service*
-# credentials on that same manual-setup page, which are not the ones you log in with.
+# credentials on the same manual-setup page (not your login credentials).
 #
-# Stacked on docker-compose.bridge.yml instead of on host networking, the app is no
-# longer on the host's loopback and cannot reach the published port. Reach the sidecar
-# by name over the compose network instead:
+# When stacked on docker-compose.bridge.yml instead of host networking, the app is not
+# on the host's loopback and cannot reach the published port. Use the sidecar's name
+# on the compose network:
 #
 #   PWS_EGRESS_PROXY=http://gluetun:8888 docker compose \
 #     -f docker-compose.yml -f docker-compose.bridge.yml -f docker-compose.vpn.yml up -d
@@ -63,20 +60,20 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
-      # Loopback on purpose. An HTTP proxy published to the LAN is an open relay for
-      # anyone on it, and this one has a VPN on the far side of it.
+      # Loopback only. An HTTP proxy published to the LAN is an open relay for anyone
+      # on it, and this one exits through a VPN.
       - "127.0.0.1:8888:8888"
     environment:
       VPN_SERVICE_PROVIDER: "${VPN_PROVIDER:-nordvpn}"
       VPN_TYPE: wireguard
       WIREGUARD_PRIVATE_KEY: "${VPN_PRIVATE_KEY:?set it in .env -- see the header}"
       SERVER_COUNTRIES: "${VPN_COUNTRIES:-}"
-      # The proxy the app fetches through. Gluetun's kill switch covers it: with the
-      # tunnel down it refuses rather than leaks.
+      # The proxy the app fetches through. Gluetun's kill switch covers it: if the
+      # tunnel is down, requests are refused instead of leaking.
       HTTPPROXY: "on"
       HTTPPROXY_LISTENING_ADDRESS: ":8888"
-      # Gluetun answers its own DNS over the tunnel, so name lookups for an origin do
-      # not go to the household resolver and describe what is being watched.
+      # Gluetun resolves DNS over the tunnel, so lookups for origins do not go to the
+      # household resolver and reveal what is being watched.
       DOT: "on"
     restart: unless-stopped
 
@@ -85,13 +82,12 @@ services:
       gluetun:
         condition: service_healthy
     environment:
-      # Named this way rather than as https_proxy: that one is read by every library in
-      # the container, the health check included, and it would send 127.0.0.1 down a
-      # tunnel that cannot bring it back. This variable is read by the pipeline's own
-      # fetches and by nothing else.
+      # Not https_proxy: every library in the container reads that, including the
+      # health check, which would send 127.0.0.1 down a tunnel that cannot return it.
+      # Only the pipeline's own fetches read this variable.
       PWS_EGRESS_PROXY: "${PWS_EGRESS_PROXY:-http://127.0.0.1:8888}"
-      # On by default whenever the above is set; here to be seen. Off means a stream
-      # whose MIME types are already correct is handed to the player as the origin's
-      # own URL -- and then the player, or the Apple TV holding that URL, fetches the
-      # origin from this network's address and the hiding is over.
+      # On by default whenever the above is set; listed here for visibility. If off, a
+      # stream with correct MIME types is handed to the player as the origin's own URL.
+      # The player, or the Apple TV holding that URL, then fetches from this network's
+      # address and the origin sees it.
       PWS_FORCE_PROXY: "1"

@@ -1,52 +1,47 @@
 #!/usr/bin/env python3
-"""Drive an AirPlay receiver's play queue, which is the only way most of them still play video.
+"""Drive an AirPlay receiver's play queue, the only way most receivers now play video.
 
-pyatv's public `play_url` sends `POST /play` and then configures the item with RTSP
-`PUT /setProperty`. Modern receivers do not play video that way any more. They take a
-play queue over `POST /command`, and the family room TV answers the old verbs with
-`501 Not Implemented` -- it does not have them at all. So this speaks the newer
-protocol directly, over pyatv's transport, rather than through its stream API.
+pyatv's public `play_url` sends `POST /play` and then RTSP `PUT /setProperty`. Modern
+receivers take a play queue over `POST /command` instead, and the family room TV answers
+the old verbs with `501 Not Implemented`. So this speaks the newer protocol over pyatv's
+transport, bypassing its stream API.
 
-Provenance: the payload shapes come from pyatv PR #2846 and PR #2899, by way of
-jcarcinogen/PearPlay's `/command` adapter. All of it is MIT, originating with pyatv
-itself (Pierre Stahl). Nothing here is our reverse engineering.
+Provenance: the payload shapes come from pyatv PR #2846 and PR #2899, via
+jcarcinogen/PearPlay's `/command` adapter. All MIT, originating with pyatv (Pierre
+Stahl). None of it is our own reverse engineering.
 
-The sequence the receiver requires, in order, none of it optional:
+The receiver requires every step, in this order:
 
   1. pair-verify, which yields the verifier the event channel is keyed from;
   2. RTSP SETUP, naming the clock: PTP, or for an older receiver NTP and a timing
      port it will call back on;
-  3. the event channel, on the port SETUP hands back -- playback state arrives here
-     and nowhere else, since `GET /playback-info` is not part of such a session;
+  3. the event channel, on the port SETUP returns. Playback state arrives only here;
+     `GET /playback-info` does not apply to this kind of session;
   4. INFO and RECORD, which the receiver expects before it will grant a session;
   5. a second SETUP for a type 130 stream, which registers the remote control
-     session. `POST /command` returns 500 until this exists; requesting the channel
-     is the entire point, and the receiver answers with no data port;
+     session. `POST /command` returns 500 until it exists. The receiver answers with
+     no data port, which is expected;
   6. the queue itself: insert the item, set its properties, set the rate.
 
-Two receiver behaviours cost PR #2899's author real time, and both close the
-connection with no error response, so neither is discoverable from the exchange:
-`playerLoggingID` must be at most six characters, and feedback must not be in flight
-while the queue commands are issued. We avoid the first by not sending the field, and
-the second by not starting feedback until the queue is loaded.
+Two receiver behaviours (found by PR #2899's author) close the connection with no
+error response: `playerLoggingID` longer than six characters, and feedback in flight
+while queue commands are issued. We skip the field, and start feedback only after the
+queue is loaded.
 
-Timing is PTP first, and NTP only for a receiver that refuses it. Up to tvOS 26 an NTP
-SETUP was enough, and it is what this module sent for as long as it has existed. From
-tvOS 26.5 the receiver still accepts it -- SETUP succeeds, the queue loads, the picture
-may even start -- but it sends nothing on the event channel, so step 6's wait for
-`playing` runs out and the hand-off is reported as refused; and what picture there was
-collapses after about twenty seconds regardless. A SETUP naming PTP and a peer list is
-what the receiver wants now. We run no PTP clock ourselves and none is needed: the
-receiver keeps its own. Established by aptgetrekt/airplay-utils against tvOS 26.5 and
-27.0 (PTP still playing at 60s with 26 events; NTP silent and gone by 27s), which is
-also where the payload comes from, by way of the same pyatv PRs as the rest.
-`PWS_AIRPLAY_TIMING` pins one or the other, for a receiver that turns out to accept
-PTP and then misbehave on it.
+Timing is PTP first, NTP only if the receiver refuses PTP. Up to tvOS 26 an NTP SETUP
+worked, and this module used it. From tvOS 26.5 the receiver accepts NTP (SETUP
+succeeds, the queue loads, the picture may start) but sends nothing on the event
+channel, so step 6's wait for `playing` times out and the hand-off is reported as
+refused. The picture dies after about twenty seconds anyway. The receiver now wants a
+SETUP naming PTP with a peer list. We run no PTP clock; the receiver keeps its own.
+Established by aptgetrekt/airplay-utils on tvOS 26.5 and 27.0 (PTP still playing at 60s
+with 26 events; NTP silent and gone by 27s), also the source of the payload, via the
+same pyatv PRs. `PWS_AIRPLAY_TIMING` forces one or the other, for a receiver that
+accepts PTP and then misbehaves on it.
 
-For the NTP fallback, this module pins the timing port. pyatv binds it ephemerally
-(`airplay/player.py`: `local_addr = (rtsp.connection.local_ip, 0)`), and an ephemeral
-port cannot be published through a docker bridge, which would force host networking
-on the whole app for the sake of one UDP socket.
+For NTP, the timing port is pinned. pyatv binds it ephemerally (`airplay/player.py`:
+`local_addr = (rtsp.connection.local_ip, 0)`), and an ephemeral port cannot be published
+through a docker bridge, which would force host networking on the whole app.
 """
 
 import asyncio
@@ -64,15 +59,15 @@ from pyatv.protocols.raop.protocols import TimingServer
 from pyatv.support.http import HttpResponse, http_connect
 from pyatv.support.rtsp import RtspSession
 
-# The receiver grants the remote control session only to a client that asks for it by
-# this UUID. It is Apple's, and it is not ours to choose.
+# Apple's fixed UUID. The receiver grants the remote control session only to a client
+# that asks with it.
 REMOTE_CONTROL_UUID = "A6B27562-B43A-4F2D-B75F-82391E250194"
 
 FEEDBACK_INTERVAL = 2       # the receiver drops a session that stops asking
 TIMINGS = ("auto", "ptp", "ntp")
 
-# What the receiver is told about the sender, in both kinds of SETUP. Not ours to vary:
-# these are the values every working reference sends.
+# Sender description for both kinds of SETUP. These are the values every working
+# reference sends; do not vary them.
 SENDER = {
     "deviceID": "AA:BB:CC:DD:EE:FF",
     "macAddress": "AA:BB:CC:DD:EE:FF",
@@ -97,9 +92,8 @@ def _brief(data, limit=300):
 
 
 def say(text):
-    """One stamped line. Everything a receiver says about itself arrives on the event
-    channel and nowhere else, so a session that ends without a word here is a session
-    nobody can account for afterwards."""
+    """One timestamped log line. The event channel is the only place a receiver
+    reports on itself, so anything not logged here is lost."""
     sys.stderr.write("%s airplay: %s\n" % (time.strftime("%H:%M:%S"), text))
 EVENT_LIMIT = 1024 * 1024   # a receiver that floods the event channel is broken, not busy
 
@@ -111,9 +105,9 @@ def _uid():
 def _event_channel(on_state):
     """An event channel that reads playback state instead of discarding it.
 
-    pyatv acknowledges these messages and throws them away, which is why its player
-    has to poll. Here they are the only source of truth: the receiver says when it is
-    playing and when it has stopped, and expects nothing back beyond the acknowledgement.
+    pyatv acknowledges these messages and discards them, so its player has to poll.
+    Here they are the only record of when the receiver starts and stops playing. It
+    expects nothing back beyond the acknowledgement.
     """
 
     class Events(BaseEventChannel):
@@ -206,8 +200,8 @@ class AirPlaySession:
             except (exceptions.HttpError, PlaybackFailed) as exc:
                 if self.timing == "ptp":
                     raise PlaybackFailed("receiver refused a PTP session: %s" % exc) from exc
-                # A receiver from before PTP-timed video says no outright, and still
-                # answers the NTP SETUP on the same connection afterwards.
+                # An older receiver refuses PTP outright, then accepts an NTP SETUP on
+                # the same connection.
                 say("%s refused PTP timing (%s); trying NTP" % (self.host, exc))
         if base is None:
             clock = await self._bind_timing(timeout)
@@ -229,19 +223,16 @@ class AirPlaySession:
             raise PlaybackFailed("receiver returned an unusable stream ID")
         self.headers["X-Apple-StreamID"] = str(stream_id)
 
-        # The item carries the URL twice. `Content-Location` is what every reference
-        # sends, and on its own it is what made these sessions end: the receiver
-        # picks its player from the keys present, not from the URL, and with only
-        # `Content-Location` an .m3u8 goes to the progressive-file player. That player
-        # reads the playlist once, plays exactly the segments it found, and reports
-        # `itemPlayedToEnd` -- 17 seconds for a four-segment window, 175 for a public
-        # live stream with thirty. `HLS-Content-Location` routes it to the HLS player,
-        # which follows the live edge. Established by bisection against the Family
-        # Room TV: the same session with this one key added ran until stopped, and
-        # nothing else tried -- PTP timing, Start-Date, Start-Position, forwardEndTime,
+        # The item carries the URL twice. The receiver picks its player from the keys
+        # present. With only `Content-Location` (what every reference sends) an .m3u8
+        # goes to the progressive-file player, which reads the playlist once, plays
+        # those segments, and reports `itemPlayedToEnd`: 17 seconds for a four-segment
+        # window, 175 for a live stream with thirty. `HLS-Content-Location` routes it to
+        # the HLS player, which follows the live edge. Found by bisection on the Family
+        # Room TV: adding this key made the session run until stopped. Nothing else
+        # changed the ending (PTP timing, Start-Date, Start-Position, forwardEndTime,
         # actionAtItemEnd, isInterestedInDateRange, the full item pyatv PR #2899 or
-        # ruhbyook/VioletRelay send -- moved the ending at all. VioletRelay is where
-        # the key came from.
+        # ruhbyook/VioletRelay send). The key came from VioletRelay.
         item = {"uuid": self.item_id, "mediaType": "file", "Content-Location": url}
         if urlsplit(url).path.lower().endswith(".m3u8"):
             item["HLS-Content-Location"] = url
@@ -254,7 +245,7 @@ class AirPlaySession:
         ):
             await self._command(command, timeout)
 
-        # Only now is it safe to ask: the receiver reports state for an item it has.
+        # The receiver reports state only once it has an item.
         await asyncio.wait_for(self.playing.wait(), timeout)
         say("%s took the stream; %s" % (self.host, clock))
         return clock
@@ -262,9 +253,9 @@ class AirPlaySession:
     async def keepalive(self):
         """Hold the session open until the receiver says the item ended.
 
-        The receiver drops a session that goes quiet, so this is not optional, and it
-        is what replaces pyatv's `/playback-info` polling -- which these receivers
-        answer with 500 because the endpoint does not apply to a queue session.
+        The receiver drops a session that goes quiet. This replaces pyatv's
+        `/playback-info` polling, which these receivers answer with 500 because the
+        endpoint does not apply to a queue session.
         """
         while not self.stopped.is_set():
             try:
@@ -304,8 +295,8 @@ class AirPlaySession:
             return
         kind = data.get("type")
         if kind != "playbackState":
-            # Errors and rate changes come through here too, and one of them is the
-            # only account a receiver ever gives of why it gave up.
+            # Errors and rate changes arrive here too. They are the only explanation a
+            # receiver gives when it gives up.
             say("%s said %s: %s" % (self.host, kind or "something unnamed",
                                     _brief(data)))
             return
@@ -353,9 +344,9 @@ class AirPlaySession:
     async def _bind_timing(self, timeout):
         """Listen for the receiver's NTP requests, before SETUP announces where.
 
-        The receiver may call back on this port the moment SETUP names it, so it is
-        bound first. Only the NTP path needs it: under PTP the receiver asks nothing
-        of us, which is also why a PTP session costs no published UDP port.
+        The receiver may call back as soon as SETUP names the port, so it is bound
+        first. Only NTP needs it; under PTP the receiver sends us nothing, so no UDP
+        port has to be published.
         """
         self.timing_transport, server = await asyncio.wait_for(
             asyncio.get_running_loop().create_datagram_endpoint(

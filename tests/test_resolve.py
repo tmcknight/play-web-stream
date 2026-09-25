@@ -25,7 +25,6 @@ def test_drm_services_are_refused_with_a_reason(url):
 
 
 def test_a_lookalike_host_is_not_treated_as_drm():
-    """netflix.com.example.org is not Netflix."""
     with pytest.raises(resolver.ResolveError) as caught:
         resolver.find_playlist("https://netflix.com.example.org/x", allow_browser=False)
     assert "DRM" not in caught.value.message
@@ -58,7 +57,7 @@ def test_verify_playlist_finds_the_referer_the_origin_wants():
 
 
 def test_verify_playlist_reports_what_happened_per_attempt():
-    """A 403, a 404 and a page that was never a playlist must not look alike."""
+    """A 403, a 404 and a non-playlist page must be reported differently."""
     with FakeOrigin(referer=GATE) as origin:
         check = hls_proxy.verify_playlist(origin.url + "/video.m3u8", None)
     assert not check.ok
@@ -101,7 +100,7 @@ def test_a_correct_mime_type_needs_no_proxy():
 
 
 def test_a_required_referer_calls_for_the_proxy_on_its_own():
-    """Safari will not send one, so the stream has to be fetched on its behalf."""
+    """Safari will not send one, so the proxy has to fetch the stream."""
     with FakeOrigin(segment_type="video/MP2T") as origin:
         origin.referer = origin.url + "/page.html"
         verdict = resolver.resolve(origin.url + "/page.html", allow_browser=False)

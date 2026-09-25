@@ -1,10 +1,9 @@
-"""Choosing a receiver, and pairing with one, without pyatv or a television.
+"""Choosing and pairing a receiver, without pyatv or a television.
 
-pyatv is not installed where the checks run -- the proxy is stdlib-only on purpose and
-CI installs no more than pytest -- so `available()` is stood up by hand and the two
-things that touch the network, the scan and the pairing handler, are replaced. What is
-left is exactly the logic this module added: which receiver a hand-off goes to, what a
-session remembers about it, and the two-step the PIN forces pairing into.
+pyatv may not be installed where the checks run, so `available()` is faked and the scan
+and pairing handler (the parts that touch the network) are replaced. What remains is
+this module's own logic: which receiver gets a hand-off, what a session records about
+it, and the two-step pairing the PIN requires.
 """
 
 import json
@@ -25,11 +24,10 @@ UNPAIRED = {"name": "Kitchen", "address": "192.168.1.52",
 
 
 class Task:
-    """A keepalive task, alive until something says otherwise.
+    """A fake keepalive task.
 
-    `cancelled` and `exception` are methods rather than flags because that is what
-    asyncio offers, and the reap path asks a finished task which of the two endings
-    it had.
+    `cancelled` and `exception` are methods, as in asyncio, because the reap path asks
+    a finished task how it ended.
     """
 
     def __init__(self, done=False, error=None):
@@ -52,10 +50,10 @@ class Task:
 
 @pytest.fixture
 def seen(monkeypatch):
-    """pyatv reported present, and the scan answering with whatever a test sets.
+    """Fake pyatv as present, with a scan that returns whatever the test sets.
 
-    Every coroutine this module would await is replaced by a plain function, so
-    nothing is left unawaited -- which the suite treats as an error, not a warning.
+    Coroutines are replaced by plain functions so nothing is left unawaited, which the
+    suite treats as an error.
     """
     monkeypatch.setattr(airplay, "pyatv", object())
     monkeypatch.setattr(airplay, "HOSTS", [FAMILY["address"]])
@@ -100,7 +98,7 @@ def test_a_sweep_looks_at_every_address_on_the_slash_24(seen):
 
 
 def test_what_a_sweep_found_is_looked_at_on_later_page_loads(seen):
-    """Once found, a swept address is no different from a configured one."""
+    """Once found, a swept address is treated like a configured one."""
     seen["answer"][0] = [dict(FAMILY), dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
     airplay.receivers(refresh=True)
@@ -124,13 +122,13 @@ def test_a_network_that_is_not_one_is_refused(seen):
 
 
 def test_an_address_named_rather_than_found_is_probed_and_kept(seen):
-    """`pair <ip>` from a shell names a receiver discovery has never seen."""
+    """`pair <ip>` from a shell can name a receiver discovery never saw."""
     airplay.remember("192.168.1.99")
     assert "192.168.1.99" in seen["looks"][-1]
 
 
 def test_nothing_is_scanned_when_there_is_nowhere_to_look(monkeypatch):
-    """pyatv reads an empty host list as "browse", which is the multicast we avoid."""
+    """pyatv treats an empty host list as "browse", which means multicast."""
     monkeypatch.setattr(airplay, "pyatv", object())
     monkeypatch.setattr(airplay, "HOSTS", [])
     monkeypatch.setattr(airplay, "_extra", [])
@@ -146,7 +144,7 @@ def test_without_pyatv_there_is_nothing_to_offer(monkeypatch):
 
 
 def test_pyatv_alone_is_enough_to_be_available(seen):
-    """An install with nothing configured is not a dead end any more: it can pair."""
+    """With no hosts configured it can still pair."""
     assert airplay.available() is True
 
 
@@ -175,7 +173,7 @@ def test_an_address_nothing_answered_at_is_refused(three, monkeypatch):
 
 
 def test_an_unpaired_receiver_is_named_rather_than_attempted(three, monkeypatch):
-    """Pairing is the missing step, and the message has to say which television."""
+    """The error must name the television that needs pairing."""
     monkeypatch.setattr(airplay, "_begin",
                         lambda url, target: pytest.fail("nothing should be handed over"))
     with pytest.raises(RuntimeError, match="Kitchen is not paired"):
@@ -206,7 +204,7 @@ def test_with_nothing_paired_the_advice_is_to_pair(three, monkeypatch):
 
 @pytest.fixture
 def handing_over(three, monkeypatch):
-    """Playback arranged so far as this module is concerned, with no receiver."""
+    """Fake the hand-off so sessions can be tested without a receiver."""
     monkeypatch.setattr(airplay, "_begin", lambda url, target: {
         "device": target["name"], "address": target["address"], "task": Task()})
     stopped = []
@@ -243,7 +241,7 @@ def test_stopping_names_the_receiver_and_leaves_the_others(handing_over):
 
 
 def test_stopping_the_stream_stops_every_receiver_playing_it(handing_over):
-    """`stop_stream` has no receiver to name, and must still take the TVs down."""
+    """`stop_stream` names no receiver and must still stop all of them."""
     airplay.start("s", "http://x/live.m3u8", FAMILY["address"])
     airplay.start("s", "http://x/live.m3u8", BEDROOM["address"])
     assert airplay.stop("s") is True
@@ -262,7 +260,7 @@ def test_a_session_the_receiver_finished_with_is_dropped(handing_over):
 
 
 def test_a_dropped_session_says_which_ending_it_had(handing_over, capsys):
-    """A stream ending is the thing we debug, so the two endings are told apart."""
+    """The log distinguishes a receiver stopping from a feed failure, for debugging."""
     airplay.start("s", "http://x/live.m3u8", FAMILY["address"])
     list(airplay._sessions.values())[0]["task"].finished = True
     airplay.status()
@@ -278,7 +276,7 @@ def test_a_dropped_session_says_which_ending_it_had(handing_over, capsys):
 # --------------------------------------------------------------------------- pairing
 
 class Handler:
-    """The pyatv pairing handler, so far as this module uses it."""
+    """The parts of the pyatv pairing handler this module uses."""
 
     def __init__(self):
         self.closed = False
@@ -289,7 +287,7 @@ class Handler:
 
 @pytest.fixture
 def pairing(three, monkeypatch):
-    """A receiver that begins pairing, and finishes it when told to."""
+    """A fake receiver that starts pairing and finishes on request."""
     state = {"handler": None, "pins": [], "refuse": False}
 
     def begin(address):
@@ -299,7 +297,7 @@ def pairing(three, monkeypatch):
 
     def finish(entry, pin):
         state["pins"].append(pin)
-        entry["handler"].close()        # the real one closes it either way
+        entry["handler"].close()        # the real one always closes it
         if state["refuse"]:
             raise RuntimeError("the receiver refused it")
         return
@@ -324,7 +322,7 @@ def test_pairing_is_two_steps_with_the_pin_between_them(pairing):
 
 def test_finishing_a_pairing_tightens_the_credentials_file(pairing, tmp_path,
                                                           monkeypatch):
-    """pyatv writes it, so the mode it lands with is the umask's business, not ours."""
+    """pyatv writes the file with the umask's mode, so we tighten it afterwards."""
     store = tmp_path / "pyatv.conf"
     store.write_text("{}")
     store.chmod(0o644)
@@ -341,7 +339,7 @@ def test_a_pin_with_no_pairing_behind_it_is_refused(pairing):
 
 
 def test_a_receiver_nothing_answered_at_is_not_paired_with(pairing):
-    """Pairing writes credentials, so it is held to the found list like casting is."""
+    """Pairing writes credentials, so, like casting, it needs a discovered receiver."""
     with pytest.raises(RuntimeError, match="not a receiver this app has found"):
         airplay.pair_begin("192.168.1.200")
 
@@ -371,7 +369,7 @@ def test_beginning_again_drops_the_attempt_nobody_finished(pairing):
 
 
 def test_an_abandoned_attempt_times_itself_out(pairing, monkeypatch):
-    """Otherwise the next person to press Pair finds the receiver already held."""
+    """Otherwise the next Pair press finds the receiver still busy."""
     timers = []
     monkeypatch.setattr(airplay.threading, "Timer",
                         lambda delay, fn: timers.append((delay, fn)) or Fake(timers))
@@ -383,7 +381,7 @@ def test_an_abandoned_attempt_times_itself_out(pairing, monkeypatch):
 
 
 class Fake:
-    """A timer that records rather than schedules."""
+    """A timer that records instead of scheduling."""
 
     def __init__(self, timers):
         self.timers = timers
@@ -414,14 +412,14 @@ def test_the_timer_does_not_hold_the_process_open(pairing):
 # ------------------------------------------------------------------- what is remembered
 
 def redeploy():
-    """Everything a restart loses, lost -- and nothing a volume would keep."""
+    """Clear the in-memory state a restart loses, keeping files on disk."""
     airplay._receivers = None
     airplay._extra = []
     airplay._remembered = None
 
 
 def written():
-    """The remembered file as it stands, or None when nothing has been written."""
+    """The remembered receivers on disk, or None if the file was never written."""
     try:
         with open(airplay.REMEMBERED) as handle:
             return json.load(handle)["receivers"]
@@ -437,14 +435,14 @@ def test_a_paired_receiver_is_written_down_when_a_sweep_finds_it(seen):
 
 
 def test_an_unpaired_receiver_is_not_worth_a_line(seen):
-    """It can do nothing a sweep could not establish again, so no file is even made."""
+    """A sweep can rediscover it, so it is not written (no file is created)."""
     seen["answer"][0] = [dict(UNPAIRED)]
     airplay.sweep("192.168.1.0/24")
     assert written() is None
 
 
 def test_a_redeploy_probes_what_it_remembered_instead_of_sweeping(seen):
-    """The point of the file: the address survives the container, like the credentials."""
+    """The address survives a container restart, like the credentials."""
     seen["answer"][0] = [dict(FAMILY), dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
 
@@ -455,7 +453,7 @@ def test_a_redeploy_probes_what_it_remembered_instead_of_sweeping(seen):
 
 
 def test_a_remembered_receiver_that_says_nothing_is_still_listed(seen):
-    """Off is not the same as gone, and only one of them is worth saying."""
+    """A receiver that is switched off stays listed, marked as not answering."""
     seen["answer"][0] = [dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
 
@@ -468,7 +466,7 @@ def test_a_remembered_receiver_that_says_nothing_is_still_listed(seen):
 
 
 def test_a_receiver_that_forgot_us_is_reported_rather_than_dropped(seen):
-    """A television that has been reset still answers; what it has lost is the keys."""
+    """A reset television still answers but has lost the pairing keys."""
     seen["answer"][0] = [dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
 
@@ -477,7 +475,7 @@ def test_a_receiver_that_forgot_us_is_reported_rather_than_dropped(seen):
     row = airplay.receivers()[0]
     assert row["seen"] is True and row["paired"] is False
     assert airplay.state(row) == "no longer paired"
-    assert written() != [], "the address is still worth keeping; pairing again needs it"
+    assert written() != [], "keep the address; pairing again needs it"
 
 
 def test_a_receiver_nobody_ever_paired_is_not_called_unpaired(seen):
@@ -486,7 +484,7 @@ def test_a_receiver_nobody_ever_paired_is_not_called_unpaired(seen):
 
 
 def test_a_silent_receiver_is_not_handed_a_stream(seen, monkeypatch):
-    """`paired` on that row is a memory, not something the scan just established."""
+    """`paired` on that row is remembered, not confirmed by this scan."""
     seen["answer"][0] = [dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
     redeploy()
@@ -539,7 +537,7 @@ def test_what_is_forgotten_stays_forgotten_across_a_redeploy(seen):
 
 
 def test_forgetting_leaves_the_credentials_alone(seen, monkeypatch):
-    """They are keyed by device, not by address, so a later sweep finds it paired."""
+    """Credentials are keyed by device, so a later sweep still finds it paired."""
     seen["answer"][0] = [dict(BEDROOM)]
     airplay.sweep("192.168.1.0/24")
     airplay.forget(BEDROOM["address"])
@@ -547,7 +545,7 @@ def test_forgetting_leaves_the_credentials_alone(seen, monkeypatch):
 
 
 def test_forgetting_a_configured_host_is_refused_rather_than_half_done(seen):
-    """The next page load would read it straight back out of the environment."""
+    """The next page load would read it back from the environment."""
     with pytest.raises(RuntimeError, match="PWS_AIRPLAY_HOST"):
         airplay.forget(FAMILY["address"])
 

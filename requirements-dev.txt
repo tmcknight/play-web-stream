@@ -1,4 +1,4 @@
-# Checks only. Nothing here is needed to run the proxy or the web app.
+# For checks only. Not needed to run the proxy or the web app.
 -r requirements.txt
 pytest>=8.0
 ruff>=0.6

@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Playwright fallback for pages whose player is assembled at runtime.
 
-Reaching for a browser is the slow path -- it exists only for the pages where the
-HTML scrape comes back empty. Two signals are collected: responses whose Content-Type
-is actually a playlist (the strongest evidence there is, and it also reveals the exact
-Referer the player used), and URLs scraped out of every frame's DOM once the player
-has booted.
+This is the slow path, used only when the HTML scrape finds nothing. It collects two
+signals: responses with a playlist Content-Type (the strongest evidence, and they show the
+Referer the player used), and URLs scraped from every frame's DOM once the player has
+booted.
 
-Candidates are then verified from *this* process with urllib rather than trusted from
-inside the browser, because a plain HTTP client is what will fetch them afterwards.
+Candidates are verified from this process with urllib, because a plain HTTP client is
+what fetches them afterwards.
 """
 
 import os
@@ -25,14 +24,13 @@ def _env_ms(name, fallback):
     return int(value) if value.isdigit() else fallback
 
 
-# A slow page or a slow connection is the first thing worth turning up, so these are
-# not buried constants: a player that has not started fetching within BOOT_MS looks
-# from here exactly like a page with no stream in it.
+# Tunable for slow pages and connections. A player that has not started fetching within
+# BOOT_MS looks the same as a page with no stream.
 BOOT_MS = _env_ms("PWS_BROWSER_BOOT_MS", 6000)
 NAV_MS = _env_ms("PWS_BROWSER_NAV_MS", 25000)
 
-# Lifted from the skill: match on content, not on a .m3u8 extension, because playlist
-# URLs frequently have no extension at all.
+# From the skill. Matches on content because playlist URLs often have no .m3u8
+# extension.
 SCRAPE_JS = r"""
 () => {
   const html = document.documentElement.outerHTML;
@@ -84,17 +82,14 @@ def find_playlist(page_url, on_progress=None):
     scraped = []
 
     args = ["--autoplay-policy=no-user-gesture-required", "--mute-audio"]
-    # The browser is a fetcher like any other here, so it leaves from wherever the
-    # rest of the pipeline does. Left out, it would be the one step that still reached
-    # the origin from this network's own address -- and the step that loads the page
-    # the origin is most interested in.
+    # The browser goes through the egress proxy like every other upstream fetch.
+    # Otherwise the page load would reach the origin from this network's address.
     proxy = hls_proxy.egress_playwright()
     if proxy:
         say("upstream via %s" % hls_proxy.egress_label())
     if os.environ.get("CHROMIUM_NO_SANDBOX") == "1":
-        # Chromium's own sandbox needs privileges a container should not be given.
-        # The container is the boundary instead, which is why this is opt-in by env
-        # and off everywhere else.
+        # Chromium's sandbox needs privileges a container should not have. Inside a
+        # container, the container is the boundary, so this is opt-in by env.
         args += ["--no-sandbox", "--disable-dev-shm-usage"]
 
     with sync_playwright() as driver:
@@ -148,8 +143,8 @@ def find_playlist(page_url, on_progress=None):
         if check.ok:
             return {"page": page_url, "playlist": url, "referer": check.referer}
 
-    # Last resort: the network URLs that failed verification from here may simply want
-    # a Referer we have not tried, so retry them against every frame origin we saw.
+    # Last resort: network URLs that failed verification may want a Referer not yet
+    # tried, so retry them with the page origin.
     for url, _ in from_network:
         check = hls_proxy.verify_playlist(
             url, urllib.parse.urlsplit(url).scheme + "://" +

@@ -1,4 +1,4 @@
-"""The web app's own logic, and the state files both halves share."""
+"""The web app's logic, and the state files it shares with the proxy."""
 
 import argparse
 import json
@@ -41,19 +41,19 @@ def test_hostname_of(header, expected):
 
 
 @pytest.mark.parametrize("header, known", [
-    ("192.168.1.10:8786", True),        # the address people actually type
+    ("192.168.1.10:8786", True),        # the address people type
     ("192.168.1.10", True),
     ("127.0.0.1:8786", True),
-    ("[fd00::5]:8786", True),           # an address in brackets is still an address
-    ("localhost:8786", True),           # the box's own browser, and the health check
+    ("[fd00::5]:8786", True),           # bracketed IPv6 address
+    ("localhost:8786", True),           # the box's own browser and the health check
     ("LOCALHOST:8786", True),
-    ("evil.example:8786", False),       # a name rebound onto our address
-    ("box.local:8786", False),          # a name we were not told about
+    ("evil.example:8786", False),       # DNS rebinding
+    ("box.local:8786", False),          # not in the allowlist
     ("", False),
     ("not a host header", False),
 ])
 def test_only_addresses_and_named_hosts_are_answered(header, known):
-    """A name is what the attack needs; an address cannot be repointed at us."""
+    """DNS rebinding needs a hostname; a literal address cannot be repointed."""
     assert webapp.known_host(header) is known
 
 
@@ -70,13 +70,13 @@ def test_host_allowlist_ignores_the_gaps():
 
 
 def test_localize_follows_the_address_the_client_used():
-    """On localhost, or behind a forward, a URL naming the LAN address is useless."""
+    """On localhost or through a port forward, the LAN address is unreachable."""
     url = "http://%s:8787/tok" % ADVERTISED
     assert webapp.localize(url, "localhost:8786") == "http://localhost:8787/tok"
 
 
 def test_localize_leaves_an_origin_url_alone():
-    """When no proxy was needed the URL is the origin's, and not ours to rewrite."""
+    """With no proxy the URL is the origin's, so it is left as is."""
     url = "https://cdn.example/a/index.m3u8"
     assert webapp.localize(url, "localhost:8786") == url
 
@@ -98,7 +98,7 @@ def test_localize_keeps_the_path_and_query():
     ("10.0.0.5", True),
     ("172.16.4.4", True),
     ("127.0.0.1", True),
-    ("169.254.9.9", True),          # link-local counts as private, which is fine
+    ("169.254.9.9", True),          # link-local counts as private
     ("8.8.8.8", False),
     ("93.184.216.34", False),
     ("100.64.0.1", False),          # carrier-grade NAT is not a LAN
@@ -118,25 +118,25 @@ def test_allow_any_opens_it_up():
 
 
 @pytest.mark.parametrize("address, allowed", [
-    ("192.168.1.20", True),         # the phone in the room, on the advertised LAN
-    ("192.168.1.10", True),         # the box itself, reached by its LAN address
-    ("127.0.0.1", False),           # the server's own browser, or a forward -- alike
+    ("192.168.1.20", True),         # a phone on the advertised LAN
+    ("192.168.1.10", True),         # the box itself, by its LAN address
+    ("127.0.0.1", False),           # local browser or a port forward (indistinguishable)
     ("::1", False),
-    ("192.168.2.20", False),        # private, but not the LAN the receiver is on
-    ("10.0.0.5", False),            # a VPN peer arriving from another RFC1918 range
+    ("192.168.2.20", False),        # private, but a different LAN
+    ("10.0.0.5", False),            # a VPN peer from another RFC1918 range
     ("172.17.0.1", False),          # the docker gateway, under bridge networking
     ("8.8.8.8", False),
     ("not an address", False),
 ])
 def test_only_lan_clients_may_work_the_handoff(address, allowed):
-    """A loopback client passes _private_client(); it must not pass this one."""
+    """Loopback passes _private_client() but must fail this check."""
     handler = webapp.Handler.__new__(webapp.Handler)
     handler.client_address = (address, 1234)
     assert handler._local_client() is allowed
 
 
 def test_allow_any_does_not_open_up_the_handoff():
-    """Serving the wider internet is a choice; starting playback in the house is not."""
+    """--allow-any widens who can use the app, not who can start AirPlay playback."""
     webapp.opts = argparse.Namespace(allow_any=True)
     handler = webapp.Handler.__new__(webapp.Handler)
     handler.client_address = ("127.0.0.1", 1234)
@@ -145,7 +145,7 @@ def test_allow_any_does_not_open_up_the_handoff():
 
 @pytest.mark.parametrize("address", ["box.local", "", "fe80::1"])
 def test_no_client_is_local_without_an_advertised_ipv4(address):
-    """With no /24 to test against, the safe answer is that nobody is on the LAN."""
+    """With no /24 to compare against, treat every client as off the LAN."""
     webapp.advertised = address
     handler = webapp.Handler.__new__(webapp.Handler)
     handler.client_address = ("192.168.1.20", 1234)
@@ -153,7 +153,7 @@ def test_no_client_is_local_without_an_advertised_ipv4(address):
 
 
 def test_a_non_local_client_is_not_told_which_receiver_is_playing(monkeypatch):
-    """The device name is the same thing GET /api/airplay withholds."""
+    """GET /api/airplay withholds the device name too."""
     monkeypatch.setattr(webapp.hls_proxy, "state_files", list)
 
     def refuse():
@@ -165,12 +165,11 @@ def test_a_non_local_client_is_not_told_which_receiver_is_playing(monkeypatch):
 
 @pytest.fixture
 def app(monkeypatch):
-    """The real handler on a real socket, which makes every client a loopback one.
+    """The real handler on a real socket, so every client is loopback.
 
-    That is the case worth serving on the wire: anything forwarded to the app arrives
-    from 127.0.0.1, indistinguishable from the server's own browser. AirPlay is reported
-    configured and paired so the test shows the guard withholding something rather than
-    there being nothing to withhold.
+    Anything forwarded to the app arrives from 127.0.0.1, the same as the server's own
+    browser. AirPlay is faked as configured and paired, so a refusal shows the guard
+    withholding real data.
     """
     monkeypatch.setattr(webapp.airplay, "available", lambda: True)
     monkeypatch.setattr(webapp.airplay, "status",
@@ -195,7 +194,7 @@ def app(monkeypatch):
 
 @pytest.fixture
 def unasked_egress(monkeypatch):
-    """A cleared cache and an unset proxy, so each test starts where a deploy does."""
+    """Clear the egress cache and unset the proxy, as on a fresh deploy."""
     monkeypatch.setattr(webapp, "_egress", {"at": 0.0, "report": None})
     for name in hls_proxy.PROXY_ENV:
         monkeypatch.delenv(name, raising=False)
@@ -212,7 +211,7 @@ def test_the_page_is_told_when_nothing_is_proxied(app, unasked_egress):
 def test_the_egress_address_is_held_rather_than_asked_on_every_page_load(app,
                                                                          unasked_egress,
                                                                          monkeypatch):
-    """It costs an upstream round trip, and the page asks for it every time it loads."""
+    """The check costs an upstream round trip and the page asks on every load."""
     asked = []
     report = {"enabled": True, "proxy": "http://vpn.lan:8888", "forced": True,
               "ip": "203.0.113.7", "error": ""}
@@ -235,7 +234,7 @@ def test_a_loopback_client_is_not_told_there_is_a_receiver(app):
 
 
 def test_a_loopback_client_may_not_pair_a_receiver(app):
-    """Pairing writes credentials for a television in this house."""
+    """Pairing writes credentials for a local television."""
     status, _, body = conftest.http(
         app + "/api/airplay/pair", {"Content-Type": "application/json"}, method="POST",
         data={"action": "begin", "host": "192.168.1.50"})
@@ -251,7 +250,7 @@ def test_a_loopback_client_may_not_start_airplay(app):
 
 
 def test_a_loopback_client_may_not_forget_a_receiver(app):
-    """It edits what this house has on file, which is not an off-LAN client's to do."""
+    """Forgetting edits the stored receivers, so it is LAN-only too."""
     status, _, body = conftest.http(
         app + "/api/airplay/forget", {"Content-Type": "application/json"},
         method="POST", data={"receiver": "192.168.1.50"})
@@ -261,17 +260,17 @@ def test_a_loopback_client_may_not_forget_a_receiver(app):
 
 @pytest.fixture
 def lan_app(app, monkeypatch):
-    """The same app, with the client taken to be on the LAN.
+    """The same app, with the client treated as on the LAN.
 
-    A real socket makes every client a loopback one, which is the case the guard
-    refuses -- so the allowed path has to be arranged rather than dialled.
+    A real socket makes every client loopback, which the guard refuses, so the allowed
+    path is patched in.
     """
     monkeypatch.setattr(webapp.Handler, "_local_client", lambda self: True)
     return app
 
 
 def test_a_lan_client_gets_the_whole_airplay_picture(lan_app):
-    """One fetch: the feature, the receivers, what is playing, and any pairing."""
+    """One fetch returns availability, receivers, sessions and pairing state."""
     status, _, body = conftest.http(lan_app + "/api/airplay")
     assert status == 200
     answer = json.loads(body)
@@ -283,7 +282,7 @@ def test_a_lan_client_gets_the_whole_airplay_picture(lan_app):
 
 
 def test_a_page_load_never_sweeps_the_lan(lan_app):
-    """The app fixture fails the test if it does: 254 probes is a button, not a load."""
+    """The app fixture fails on a sweep. 254 probes should need a button press."""
     assert conftest.http(lan_app + "/api/airplay")[0] == 200
 
 
@@ -327,7 +326,7 @@ def test_airplay_hands_the_named_receiver_the_advertised_url(lan_app, monkeypatc
 
 
 def test_stopping_names_the_receiver_too(lan_app, monkeypatch):
-    """One stream may be on two televisions, so Stop has to say which."""
+    """One stream may be on two televisions, so Stop names one."""
     stopped = {}
     monkeypatch.setattr(webapp.airplay, "stop",
                         lambda source, address=None: stopped.update(
@@ -340,7 +339,7 @@ def test_stopping_names_the_receiver_too(lan_app, monkeypatch):
 
 
 def test_a_receiver_that_refuses_the_handoff_is_named_in_the_answer(lan_app, monkeypatch):
-    """Pairing says nothing about playback working, so the failure is per television."""
+    """Pairing does not guarantee playback, so the error names the television."""
     def refuse(*args, **kwargs):
         raise RuntimeError("Bedroom would not take the stream: 501 Not Implemented")
 
@@ -357,7 +356,7 @@ def test_a_receiver_that_refuses_the_handoff_is_named_in_the_answer(lan_app, mon
 
 
 def test_pairing_begins_and_finishes_across_two_requests(lan_app, monkeypatch):
-    """The receiver shows its PIN between them, which is why it cannot be one."""
+    """The receiver shows its PIN between the two requests."""
     calls = []
     monkeypatch.setattr(webapp.airplay, "pair_begin",
                         lambda host: calls.append(("begin", host)) or {
@@ -429,7 +428,7 @@ def test_a_receiver_that_cannot_be_forgotten_reports_rather_than_500s(lan_app,
 # ------------------------------------------------------------------ the startup probe
 
 def test_startup_probes_what_is_remembered_and_says_what_answered(monkeypatch, capsys):
-    """So a redeploy that lost a television is visible without opening the UI."""
+    """So a redeploy that lost a television shows up in the log."""
     monkeypatch.setattr(webapp.airplay, "available", lambda: True)
     monkeypatch.setattr(webapp.airplay, "receivers", lambda refresh=False: [
         dict(AIRPLAY),
@@ -468,7 +467,7 @@ def test_a_pairing_request_with_no_action_is_a_400(lan_app):
 
 
 def test_a_rebound_name_is_refused_before_any_route(app):
-    """The socket is a LAN client either way; the Host says whose page is driving it."""
+    """The socket is a LAN client either way; the Host shows which site is driving it."""
     status, _, body = conftest.http(app + "/api/streams", {"Host": "evil.example"})
     assert status == 403
     assert b"Unrecognised Host" in body
@@ -483,13 +482,13 @@ def test_a_rebound_name_cannot_drive_a_post_route_either(app):
 
 
 def test_an_allowed_name_is_served(app):
-    """The name people reach it by on a LAN that serves its own DNS."""
+    """For a LAN with its own DNS name for the box."""
     webapp.allow_hosts = frozenset({"box.local"})
     assert conftest.http(app + "/api/streams", {"Host": "box.local:8786"})[0] == 200
 
 
 def test_another_site_may_not_drive_the_resolver(app):
-    """GET /api/resolve is a simple request, so CORS lets it through unasked."""
+    """GET /api/resolve is a simple request, so CORS sends no preflight."""
     status, _, body = conftest.http(
         app + "/api/resolve?url=https://o.x/a.m3u8", {"Sec-Fetch-Site": "cross-site"})
     assert status == 403
@@ -503,10 +502,10 @@ def test_our_own_page_still_drives_it(app, monkeypatch):
 
 
 def test_a_cancelled_resolve_starts_no_proxy(app, monkeypatch):
-    """Cancel closes the event stream; the resolve behind it has to notice and stop.
+    """Cancel closes the event stream, and the resolve must stop.
 
-    It used to carry on and start a proxy for a stream nobody was waiting for, which
-    then turned up under Running a moment after the person had said no.
+    It used to carry on and start a proxy, which then appeared under Running just after
+    the user cancelled.
     """
     closed, finished = threading.Event(), threading.Event()
     outcome = []
@@ -545,9 +544,10 @@ def test_a_cancelled_resolve_starts_no_proxy(app, monkeypatch):
 
 
 def test_allow_any_lifts_the_host_check_but_not_the_cross_site_one(app):
-    """One escape hatch, for a network the operator understands better than we do.
+    """--allow-any is for networks the operator knows better than we do.
 
-    It says nothing about which page is driving the browser, so that check stays.
+    It says nothing about which site is driving the browser, so the cross-site check
+    stays.
     """
     webapp.opts.allow_any = True
     assert conftest.http(app + "/api/streams", {"Host": "evil.example"})[0] == 200
@@ -557,7 +557,7 @@ def test_allow_any_lifts_the_host_check_but_not_the_cross_site_one(app):
 
 
 def test_a_loopback_client_still_gets_the_page_and_the_streams(app):
-    """The guard is on the hand-off, not on the app: watching from the box is fine."""
+    """The guard covers the hand-off only; watching from the box is allowed."""
     assert conftest.http(app + "/")[0] == 200
     status, _, body = conftest.http(app + "/api/streams")
     assert status == 200
@@ -572,7 +572,7 @@ def handler_for(payload, state=None, monkeypatch=None):
 
 
 def test_a_proxied_stream_is_handed_the_playlist_on_the_advertised_address(monkeypatch):
-    """The receiver fetches it from across the LAN, so the localized URL is no use."""
+    """The receiver fetches over the LAN, so the localized URL would not work."""
     state = {"url": "http://%s:8787/tok" % ADVERTISED, "port": 8787}
     url = handler_for({"source": "https://o.x/a.m3u8"}, state, monkeypatch)
     assert url == "http://%s:8787/tok/live.m3u8" % ADVERTISED
@@ -593,7 +593,7 @@ def test_nothing_but_a_http_url_is_handed_over(url, monkeypatch):
 # --------------------------------------------------------------------------- warnings
 
 def test_a_docker_bridge_address_is_called_out(capsys, monkeypatch):
-    """Everything looks healthy and nothing ever plays, so it is worth shouting about."""
+    """With a bridge address nothing plays and nothing looks wrong, so warn loudly."""
     monkeypatch.setattr(webapp.os.path, "exists", lambda path: path == "/.dockerenv")
     webapp.check_advertised("172.17.0.3")
     assert "docker bridge" in capsys.readouterr().err
@@ -607,12 +607,12 @@ def test_a_lan_address_passes_quietly(capsys, monkeypatch):
 
 @pytest.fixture
 def handoffs(monkeypatch):
-    """The hand-off reported usable, with nothing touching the network."""
+    """Report the hand-off as available without touching the network."""
     monkeypatch.setattr(webapp.airplay, "available", lambda: True)
 
 
 def test_a_host_off_the_advertised_lan_is_called_out(capsys, monkeypatch, handoffs):
-    """Under bridge networking the controls hide themselves for everybody -- say so."""
+    """Under bridge networking the AirPlay controls hide for everyone, so warn."""
     monkeypatch.setattr(webapp.hls_proxy, "lan_ip", lambda: "172.17.0.3")
     webapp.check_handoff_reach(ADVERTISED)
     assert "AirPlay controls" in capsys.readouterr().err
@@ -625,7 +625,7 @@ def test_a_host_on_the_advertised_lan_passes_quietly(capsys, monkeypatch, handof
 
 
 def test_nothing_is_said_when_no_handoff_is_configured(capsys, monkeypatch):
-    """No pyatv, so there is no control to lose."""
+    """Without pyatv there are no controls to hide."""
     monkeypatch.setattr(webapp.airplay, "available", lambda: False)
     monkeypatch.setattr(webapp.hls_proxy, "lan_ip", lambda: "172.17.0.3")
     webapp.check_handoff_reach(ADVERTISED)
@@ -635,7 +635,7 @@ def test_nothing_is_said_when_no_handoff_is_configured(capsys, monkeypatch):
 # --------------------------------------------------------------------------- state
 
 def test_the_state_directory_is_private():
-    """It names a running stream's token, so no other account may read it."""
+    """It holds each stream's token, so other accounts must not read it."""
     path = hls_proxy.state_dir()
     mode = stat.S_IMODE(os.lstat(path).st_mode)
     assert mode & 0o077 == 0, oct(mode)
@@ -650,7 +650,7 @@ def test_state_files_are_written_unreadable_to_others(tmp_path, monkeypatch):
 
 
 def test_the_proxy_log_is_private_too(tmp_path, monkeypatch):
-    """It prints the serving URL, and that URL carries the token."""
+    """It contains the serving URL, which carries the token."""
     monkeypatch.setattr(hls_proxy, "state_dir", lambda: str(tmp_path))
     monkeypatch.setattr(webapp, "opts", argparse.Namespace(
         window=None, cache_mb=None, advertise_ip=None, proxy_port=None,
@@ -678,7 +678,7 @@ def test_state_paths_differ_per_source(tmp_path, monkeypatch):
 
 
 def test_owns_pid_rejects_a_process_that_is_not_a_proxy():
-    """A recycled pid must not be signalled just because a stale file named it."""
+    """Do not signal a recycled pid named by a stale state file."""
     if not os.path.isdir("/proc"):
         pytest.skip("no procfs")
     assert hls_proxy.owns_pid(os.getpid()) is False
@@ -687,7 +687,7 @@ def test_owns_pid_rejects_a_process_that_is_not_a_proxy():
 def test_a_hostile_state_directory_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(hls_proxy.tempfile, "gettempdir", lambda: str(tmp_path))
     impostor = tmp_path / ("play-web-stream-%d" % os.getuid())
-    impostor.symlink_to(tmp_path)               # a symlink is not a directory we own
+    impostor.symlink_to(tmp_path)               # a symlink, not our directory
     with pytest.raises(SystemExit):
         hls_proxy.state_dir()
 
@@ -696,7 +696,7 @@ def test_a_hostile_state_directory_is_refused(tmp_path, monkeypatch):
 
 @pytest.fixture
 def ports():
-    """The app told what range was published to it, as the compose files tell it."""
+    """Set the published port range, as the compose files do."""
     def configure(first, last):
         webapp.opts = argparse.Namespace(allow_any=False, proxy_port=first,
                                          proxy_port_last=last)
@@ -710,14 +710,14 @@ def test_the_limit_is_the_published_range(ports, monkeypatch):
 
 
 def test_an_unpublished_range_falls_back_to_the_search_range(ports, monkeypatch):
-    """Nothing was published, so the ceiling is the only one the proxy itself has."""
+    """With no published range, the limit is the proxy's own port search range."""
     ports(None, None)
     monkeypatch.setattr(webapp, "live_states", list)
     assert webapp.capacity()["limit"] == hls_proxy.PORT_SEARCH_RANGE
 
 
 def test_a_full_house_is_refused_before_a_proxy_is_started(ports, monkeypatch):
-    """The stream past the end would bind a port nothing forwards, and look broken."""
+    """An extra stream would bind a port nothing forwards, and fail to play."""
     ports(8787, 8788)
     monkeypatch.setattr(webapp, "live_states", lambda: [{}, {}])
     monkeypatch.setattr(hls_proxy, "existing_instance", lambda source: None)
@@ -732,7 +732,7 @@ def test_a_full_house_is_refused_before_a_proxy_is_started(ports, monkeypatch):
 
 
 def test_a_stream_already_running_is_handed_back_even_when_full(ports, monkeypatch):
-    """Reusing a proxy takes no new port, so the limit has no business refusing it."""
+    """Reusing a proxy takes no new port, so the limit does not apply."""
     ports(8787, 8788)
     monkeypatch.setattr(webapp, "live_states", lambda: [{}, {}])
     monkeypatch.setattr(hls_proxy, "existing_instance",
@@ -742,7 +742,7 @@ def test_a_stream_already_running_is_handed_back_even_when_full(ports, monkeypat
 
 
 def test_the_streams_route_reports_the_capacity(app, monkeypatch):
-    """The page cannot say how much room is left unless the route tells it."""
+    """The page shows remaining capacity from this field."""
     monkeypatch.setattr(webapp, "live_states", list)
     webapp.opts.proxy_port, webapp.opts.proxy_port_last = 8787, 8790
     status, _, body = conftest.http(app + "/api/streams")
@@ -751,7 +751,7 @@ def test_the_streams_route_reports_the_capacity(app, monkeypatch):
 
 
 def test_a_stream_will_not_bind_past_the_ceiling_it_was_given():
-    """Binding outside a published range would serve where nothing forwards."""
+    """A port outside the published range is not forwarded."""
     held = socket.socket()
     held.bind(("0.0.0.0", 0))
     held.listen(1)
@@ -760,7 +760,7 @@ def test_a_stream_will_not_bind_past_the_ceiling_it_was_given():
         with pytest.raises(SystemExit):
             hls_proxy.bind_server(taken, taken)     # the only port allowed is in use
 
-        httpd, port = hls_proxy.bind_server(taken)  # no ceiling: it moves up instead
+        httpd, port = hls_proxy.bind_server(taken)  # no ceiling: try higher ports
         httpd.server_close()
         assert port > taken
     finally:

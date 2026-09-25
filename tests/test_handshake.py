@@ -1,8 +1,7 @@
-"""Getting past an origin that screens the client itself, with and without curl_cffi.
+"""Origins that screen the client itself, with and without curl_cffi.
 
-Most of these stand a fake browser in for curl_cffi, so the retry logic is checked on
-every interpreter CI runs, whether or not the extra is installed there. The ones that
-need the real thing say so and skip without it.
+Most tests use a fake browser in place of curl_cffi, so the retry logic runs on every
+CI interpreter. Tests that need the real library skip without it.
 """
 
 import io
@@ -20,13 +19,13 @@ import resolve as resolver
 from origin import SEGMENT, FakeOrigin
 
 GATE = "https://page.example/"
-MARK = "X-Browser-Handshake"        # what the fake browser sends and the fake gate demands
+MARK = "X-Browser-Handshake"        # sent by the fake browser, required by the fake gate
 BROWSER = hls_proxy.handshake_available()
 
 
 @pytest.fixture(autouse=True)
 def python_handshake():
-    """Every test starts and ends presenting Python's handshake, whatever it did between."""
+    """Reset to Python's handshake before and after each test."""
     hls_proxy.use_browser_handshake(False)
     yield
     hls_proxy.use_browser_handshake(False)
@@ -34,7 +33,7 @@ def python_handshake():
 
 @pytest.fixture
 def fake_browser(monkeypatch):
-    """A stand-in for curl_cffi: urllib wearing the marker the fake gate looks for."""
+    """Stands in for curl_cffi: urllib plus the header the fake gate requires."""
     calls = []
 
     def browser_open(url, headers, timeout):
@@ -56,7 +55,7 @@ def no_browser(monkeypatch):
 # ----------------------------------------------------------------------------- scope
 
 def test_a_switch_outside_a_scope_is_process_wide(fake_browser):
-    """One proxy serves one source, so the switch it makes belongs to the process."""
+    """One proxy serves one source, so outside a scope the switch is process-wide."""
     hls_proxy.use_browser_handshake()
     assert hls_proxy.handshake() == "browser"
 
@@ -90,11 +89,11 @@ def test_a_nested_scope_puts_back_what_it_found(fake_browser):
 
 
 def test_one_resolve_does_not_drag_another_along(fake_browser):
-    """The bug: the web app resolves several sources at once, in threads of its own.
+    """The web app resolves several sources at once, in separate threads.
 
-    A gated origin switched the whole process to a browser's handshake, so an unrelated
-    resolve presented one too -- and whichever finished first put the switch back while
-    the other was still fetching with it. Intermittent, and invisible on a quiet box.
+    A gated origin used to switch the whole process to the browser handshake, so an
+    unrelated resolve used it too, and whichever finished first switched it back while
+    the other was still fetching. Intermittent, and hard to see on an idle machine.
     """
     gated_switched = threading.Event()
     other_finished = threading.Event()
@@ -127,10 +126,10 @@ def test_one_resolve_does_not_drag_another_along(fake_browser):
 
 
 def test_discover_carries_the_scope_into_its_pool(fake_browser):
-    """Candidates are verified in a thread pool, which the per-thread scope misses.
+    """Candidates are verified in a thread pool, outside the per-thread scope.
 
-    Without the value being carried in, the workers fall back to the process default,
-    every candidate is refused, and a gated page resolves as "no playlist found".
+    Without passing the value in, workers use the process default, every candidate is
+    refused, and a gated page reports "no playlist found".
     """
     with FakeOrigin(client_gate=MARK) as origin, hls_proxy.handshake_scope():
         hls_proxy.use_browser_handshake()
@@ -151,7 +150,7 @@ def test_without_curl_cffi_a_client_gate_is_reported_as_before(no_browser):
     hls_proxy.report_gate(gate, origin.url + "/video.m3u8", out)
     text = out.getvalue()
     assert "screening the client itself" in text
-    assert "curl_cffi" in text, "the way past it is worth naming"
+    assert "curl_cffi" in text, "the error should name curl_cffi as the fix"
 
 
 def test_a_browser_handshake_clears_a_client_gate(fake_browser):
@@ -195,12 +194,12 @@ def test_fetch_through_gate_raises_gated_when_nothing_gets_through(no_browser):
 
 
 def test_fetch_through_gate_leaves_a_404_alone(fake_browser):
-    """Only a refusal is worth a second look; a missing file is raised as it always was."""
+    """Only a refusal gets a retry; a 404 is raised as before."""
     with FakeOrigin(referer=GATE) as origin:
         try:
             hls_proxy.fetch_through_gate(origin.url + "/missing.txt", referer=GATE)
         except urllib.error.HTTPError as exc:
-            code = exc.code             # consumed here, before the origin goes away
+            code = exc.code             # read before the origin stops
             exc.close()
         else:
             code = None
@@ -277,7 +276,7 @@ def test_read_honours_the_amount_across_chunk_boundaries():
 
 
 def test_a_decoded_body_does_not_carry_the_encoded_length():
-    """libcurl inflates on the way in; a Content-Length for the gzip would be a lie."""
+    """libcurl decompresses, so the gzip Content-Length no longer matches the body."""
     plain = hls_proxy.BrowserResponse(StubResponse([b"x"], {"Content-Length": "1",
                                                              "Content-Type": "text/plain"}))
     assert plain.headers.get("Content-Length") == "1"
@@ -298,7 +297,7 @@ def test_closing_closes_the_stream():
 # --------------------------------------------------------------------------- the CLI
 
 def run_without_curl_cffi(*args):
-    """Run hls_proxy as a machine with the extra missing would, whatever this one has."""
+    """Run hls_proxy as if curl_cffi were not installed."""
     code = ("import runpy, sys; sys.modules['curl_cffi'] = None; "
             "sys.argv = ['hls_proxy.py'] + sys.argv[1:]; "
             "runpy.run_path('hls_proxy.py', run_name='__main__')")
@@ -338,8 +337,8 @@ def test_the_flag_is_refused_without_the_extra():
 
 # --------------------------------------------------------------------------- with curl_cffi
 
-# Over plain HTTP there is no handshake to screen, so the fake origin demands a header
-# only a browser sends: Python's urllib has no Accept-Language, every browser does.
+# Plain HTTP has no handshake to screen, so the fake origin requires Accept-Language,
+# which browsers send and urllib does not.
 needs_curl_cffi = pytest.mark.skipif(not BROWSER, reason="curl_cffi is not installed")
 LANGUAGE = "Accept-Language"
 
@@ -362,7 +361,7 @@ def test_curl_cffi_gets_through_and_streams_the_segments():
 
 @needs_curl_cffi
 def test_curl_cffi_sends_the_user_agent_its_handshake_goes_with():
-    """The two must agree, so the UA is left to curl_cffi -- and it is ours already."""
+    """The UA must match the handshake, so curl_cffi sets it (and it equals ours)."""
     with FakeOrigin() as origin:
         hls_proxy.use_browser_handshake()
         hls_proxy.fetch(origin.url + "/video.m3u8", referer=GATE)
@@ -381,7 +380,7 @@ def test_a_connection_failure_is_a_urlerror_like_urllib_gives():
 
 @needs_curl_cffi
 def test_the_proxy_finds_its_own_way_past_a_client_gate(start_proxy):
-    """The acceptance case: gated under every header profile, served all the same."""
+    """Gated under every header profile, but served anyway."""
     with FakeOrigin(client_gate=LANGUAGE) as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         assert "handshake: browser" in proxy.log.read_text()

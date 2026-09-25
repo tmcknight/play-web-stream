@@ -4,10 +4,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Play web stream</title>
-<!-- The icon travels inside the document, because the app is one file the server
-     reads off disk and a second request would be a second thing to keep in step.
-     iOS wants a PNG for the home screen and may well ignore the SVG below; that
-     costs a rounded square on the springboard, not the feature. -->
+<!-- The icon is inline because the app is one file read off disk, and a separate
+     file would have to be kept in sync. iOS wants a PNG for the home screen and may
+     ignore this SVG; the only cost is a plain icon on the home screen. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236ea8fe'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%230b0b0e'/%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236ea8fe'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%230b0b0e'/%3E%3C/svg%3E">
 <style>
@@ -15,13 +14,12 @@
     color-scheme: dark;
     --bg: #101013; --card: #17171c; --line: #2a2a33;
     --ink: #e8e8ea; --dim: #9a9aa6; --accent: #6ea8fe; --bad: #ff8080; --good: #7ddba1;
-    /* Two colours that used to be written into rules one at a time: the ink a filled
-       button carries, and the well a log or a code block sits in. A light theme has
-       to move both, so they are tokens like the rest. */
+    /* Text on a filled button, and the background of logs and code blocks. The
+       light theme changes both, so they are tokens. */
     --on-accent: #0b0b0e; --well: #0d0d11;
   }
-  /* The phone that opens this at a match is as likely to be in daylight as not.
-     Same tokens, moved; no rule below knows which theme it is in. */
+  /* Light theme for daylight use. Only the tokens change; no rule below depends on
+     the theme. */
   @media (prefers-color-scheme: light) {
     :root {
       color-scheme: light;
@@ -56,11 +54,10 @@
   }
   a.btn { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
   button.ghost, .btn.ghost { background: transparent; color: var(--ink); font-weight: 500; }
-  /* Stop and Forget end something that is running. They are not the same kind of
-     thing as Log or Copy and should not look like them. */
+  /* Stop and Forget end something, so they look different from Log or Copy. */
   button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
-  /* A button waiting for its second tap wears the danger colour for as long as it
-     waits, so a quiet button that ends something is loud exactly when it is about to. */
+  /* A button waiting for its confirming second tap takes the danger colour while it
+     waits. */
   button.armed { color: var(--bad); border-color: var(--bad); }
   button:disabled { opacity: .5; cursor: default; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -80,21 +77,20 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
-  /* A URL has no spaces to break at, so it is told it may break anywhere -- but at a
-     character boundary, which is what break-all here was getting wrong on the odd
-     percent-escape. */
+  /* A URL has no spaces, so it may break anywhere, but only at a character
+     boundary. break-all used to split some percent-escapes. */
   .urlbox {
     display: block; overflow-wrap: anywhere;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 14px; color: var(--accent); text-decoration: none; margin-bottom: 14px;
   }
-  /* In a stream row the URL is an identifier, not something to read: one line, with
-     the middle elided by fitUrl(), and the whole of it in the row's Details. */
+  /* In a stream row the URL is only an identifier: one line, with the middle cut by
+     fitUrl(). The full URL is in the row's Details. */
   .urlbox.one { white-space: nowrap; overflow: hidden; margin-bottom: 6px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .grow { flex: 1 1 auto; }
-  /* Dark modules on white whatever the theme. Light-on-dark is an inverted code, and
-     plenty of cameras will not read one; the white patch is the quiet zone too. */
+  /* Dark on white in both themes, because many cameras cannot read an inverted QR
+     code. The white patch also serves as the quiet zone. */
   .qr { background: #ffffff; width: 132px; height: 132px; flex: 0 0 auto; border-radius: 8px; }
   .qr svg { width: 100%; height: 100%; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 13px; }
@@ -105,16 +101,14 @@
   .tried { margin: 0 0 8px; overflow-wrap: anywhere; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
        margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
-  /* One row of the two lists this page keeps: running streams, and receivers. They
-     are laid out alike and are not the same thing, so neither owns the class. */
+  /* A row in either list: running streams or receivers. Both share this layout. */
   .line { display: flex; gap: 12px; align-items: center; justify-content: space-between;
           padding: 10px 0; font-size: 13px; flex-wrap: wrap; }
   .line + .line { border-top: 1px solid var(--line); }
   .line code { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   .who { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
-  /* A button per television, per protocol, is a long row in a house with four of
-     them. So the row drops onto its own line rather than squeezing the URL beside it
-     down to one character per line, and its buttons are sized for a 13px row. */
+  /* One button per TV per protocol makes a long row. It wraps onto its own line
+     instead of squeezing the URL beside it, and its buttons are sized for a 13px row. */
   .line .what { flex: 1 1 260px; min-width: 0; }
   .line .acts { flex: 0 1 auto; justify-content: flex-end; }
   .line button { padding: 9px 12px; font-size: 13px; }
@@ -139,11 +133,9 @@
     margin: 14px 0 0; padding: 12px 14px; border-radius: 10px; font-size: 13px;
     border: 1px solid var(--line); background: var(--card); color: var(--dim);
   }
-  /* Icons. One size for a glyph standing beside a word, and the colour of whatever it
-     stands in -- every one is drawn with currentColor, so the glyph on a filled button
-     and the glyph in a dim hint each come out the right colour without a rule of their
-     own. They are all aria-hidden: the words beside them are what is read aloud, and
-     nothing on this page is said by a picture alone. */
+  /* Icons. All are drawn with currentColor, so they take the colour of their
+     container without extra rules. All are aria-hidden: the text beside them is read
+     aloud, and no icon appears without text. */
   .sprite { display: none; }
   .ico { width: 17px; height: 17px; flex: 0 0 auto; }
   h1 .ico { width: 22px; height: 22px; color: var(--accent); }
@@ -151,48 +143,42 @@
   .status .ico { width: 19px; height: 19px; color: var(--good); }
   .card.err .status .ico { color: var(--bad); }
   .stage .done .ico { color: var(--good); }
-  /* A glyph in running prose has no flex row to sit in the middle of, so it is dropped
-     onto the text's baseline by hand. */
+  /* An icon in running text has no flex row to centre it, so it is aligned to the
+     baseline by hand. */
   .sample .ico, .callout .ico { width: 15px; height: 15px; vertical-align: -3px; margin-right: 4px; }
-  /* A block, not inline: two hand-offs that failed are two sentences, and inline they
-     ran together on any row wide enough to hold both. */
+  /* A block, so two failure messages on one wide row do not run together. */
   .warn { display: flex; gap: 6px; align-items: flex-start; }
   .live { display: inline-flex; gap: 6px; }
-  /* Beside a button in a row of them, a warning is a label and not a paragraph, so it
-     loses the space it would have above it under a card's text. */
+  /* In a row of buttons a warning acts as a label, so it drops its top margin. */
   .acts .warn { margin-top: 0; }
   .warn .ico { margin-top: 2px; }
   .live { align-items: center; }
-  /* A sentence that wraps keeps its glyph in a column beside it rather than letting it
-     become the first word of the second line. */
+  /* Keeps the icon in its own column when the sentence wraps. */
   .note { display: flex; align-items: flex-start; gap: 8px; }
   .note .ico { margin-top: 2px; }
-  /* The chevron stands in for the disclosure triangle the browser would draw, so the
-     one arrow on the page is in the same hand as everything else. */
+  /* Replaces the browser's disclosure triangle with a chevron that matches the other
+     icons. */
   summary::-webkit-details-marker { display: none; }
   summary .ico { width: 14px; height: 14px; transition: transform .15s ease; }
   details[open] > summary .ico { transform: rotate(90deg); }
   @media (prefers-reduced-motion: reduce) { summary .ico { transition: none; } }
   @media (max-width: 520px) {
     .qr { display: none; }
-    /* On a phone every button row wraps, and right-aligned wrapped rows read as
-       ragged. Line them up with the URL above them instead. */
+    /* On a phone button rows wrap, and right-aligned wrapped rows look ragged, so
+       align them left with the URL above. */
     .line .acts { justify-content: flex-start; }
-    /* A thumb is not a mouse pointer. Nothing here is smaller than a thumb. */
+    /* Minimum touch target size. */
     button, .btn, .line button { min-height: 44px; }
   }
 </style>
 
-<!-- Heroicons (MIT, Tailwind Labs), the 24px outline set, copied in rather than linked.
-     This page is one file the server reads off disk and hands to a phone on a LAN that
-     may have no route to the internet at all, so a stylesheet from a CDN would be two
-     dozen ways for the icons to simply not be there. Each glyph is a <symbol> and the
-     page draws one with <use href="#i-name">. -->
+<!-- Heroicons (MIT, Tailwind Labs), 24px outline set, copied in instead of linked.
+     The page may be served on a LAN with no internet access, so a CDN could leave it
+     without icons. Each glyph is a <symbol>, drawn with <use href="#i-name">. -->
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <!-- Heroicons has no AirPlay mark, and the triangle typed in its
-       place read as a bullet point. This is Apple's shape -- a screen
-       with the beam under it -- drawn on the same 24 grid, at the same
-       1.5 weight, so it sits in a row of the others without shouting. -->
+  <!-- Heroicons has no AirPlay mark, and a typed triangle looked like a
+       bullet point. This is Apple's shape (a screen with a beam below)
+       drawn on the same 24 grid at the same 1.5 weight, so it matches. -->
   <symbol id="i-airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
     <path d="M8.25 15.75H4.5A2.25 2.25 0 0 1 2.25 13.5V6A2.25 2.25 0 0 1 4.5 3.75h15A2.25 2.25 0 0 1 21.75 6v7.5a2.25 2.25 0 0 1-2.25 2.25h-3.75"/>
     <path d="M12 15 17.25 20.25H6.75L12 15Z" fill="currentColor"/>
@@ -272,7 +258,7 @@
 
 <main>
   <h1><svg class="ico" aria-hidden="true"><use href="#i-play-circle"/></svg>Play web stream</h1>
-  <p class="sub">Paste a page URL. Get one Safari will actually play &mdash; AirPlay, fullscreen and all.</p>
+  <p class="sub">Paste a page URL. Get a stream that plays on Apple devices, with AirPlay and fullscreen.</p>
 
   <form id="f">
     <input type="url" id="url" placeholder="https://embed.example/stream/123" required
@@ -292,8 +278,8 @@
   <p class="callout" id="pairhint" hidden><svg class="ico" aria-hidden="true"><use href="#i-tv"/></svg>To send streams to a TV, pair an Apple TV first.
     <a href="#airplayWrap" id="topair">Set one up</a>.</p>
 
-  <!-- Polite, so a screen reader hears each stage and the verdict without being
-       interrupted mid-word by the next one. -->
+  <!-- Polite, so a screen reader announces each stage and the verdict without
+       cutting one off with the next. -->
   <section id="out" aria-live="polite"></section>
 
   <section id="streamsWrap" hidden>
@@ -310,20 +296,17 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-// esc() makes a string safe as text or inside a quoted attribute; it does not make a
-// URL safe to navigate to, because "javascript:..." survives it unchanged. Every href
-// here is built from a playlist URL the resolver worked out, so anything but http(s)
-// means something upstream went wrong -- and "#" is the harmless way to say so.
+// esc() makes a string safe as text or in a quoted attribute, but not as a link:
+// "javascript:..." passes through unchanged. Every href here comes from a resolved
+// playlist URL, so anything other than http(s) is an upstream error and becomes "#".
 const href = (s) => /^https?:\/\//i.test(String(s ?? "")) ? esc(s) : "#";
 
-// One glyph out of the sprite at the top of the document.
 const ico = (name) => `<svg class="ico" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
-// The inside of a labelled control: the glyph, then the words in a span of their own.
-// The span is the point -- the words on the buttons here change constantly ("Copy" to
-// "Copied", "Log" to "Hide log", a receiver's name to "Starting\u2026") and a plain
-// `button.textContent = "..."` would take the glyph out with them. Every label on this
-// page goes through setLabel() instead, which keeps the glyph named in data-icon.
+// A labelled control's content: the icon, then the text in its own span. Button text
+// changes often ("Copy" to "Copied", "Log" to "Hide log", a receiver's name to
+// "Starting\u2026"), and setting textContent would remove the icon. All labels go
+// through setLabel(), which keeps the icon named in data-icon.
 const withIcon = (icon, text) => (icon ? ico(icon) : "") + `<span class="lbl">${esc(text)}</span>`;
 
 function setLabel(el, text, icon) {
@@ -331,14 +314,12 @@ function setLabel(el, text, icon) {
   el.innerHTML = withIcon(el.dataset.icon || "", text);
 }
 
-// What a control currently says, with the glyph left out of it: the counterpart to
-// setLabel(), for the several places that put a label back the way they found it.
+// A control's current text without the icon. Used with setLabel() to restore a label.
 const labelOf = (el) => el.textContent.trim();
 
-// navigator.clipboard exists only in a secure context -- HTTPS, or localhost. This app
-// is meant to be reached on a LAN address over plain HTTP, so on every device except
-// the host machine it is simply absent, and copy failed with no way to see why. Fall
-// back to the old selection-based copy, which carries no such requirement.
+// navigator.clipboard only exists in a secure context (HTTPS or localhost). This app
+// is reached over plain HTTP on a LAN address, so on every device but the host it is
+// missing. Fall back to the older selection-based copy, which works without it.
 async function copyText(text) {
   if (window.isSecureContext && navigator.clipboard) {
     await navigator.clipboard.writeText(text);
@@ -356,8 +337,8 @@ async function copyText(text) {
   if (!ok) throw new Error("execCommand(copy) was refused");
 }
 
-// Report the reason rather than swallowing it: a refused clipboard and a missing one
-// are different problems and looked identical before.
+// Report the reason, because a refused clipboard and a missing one are different
+// problems.
 async function copyInto(btn, text, idle) {
   try {
     await copyText(text);
@@ -370,24 +351,23 @@ async function copyInto(btn, text, idle) {
   setTimeout(() => { setLabel(btn, idle, "clipboard-document"); btn.title = ""; }, 1500);
 }
 
-// localStorage is a per-viewer convenience and nothing more. In a private window it
-// can be absent, and on some phones reading it throws rather than answering null, so
-// every touch of it is wrapped and the page renders the same either way.
+// localStorage is only a per-viewer convenience. In a private window it can be
+// missing, and on some phones reading it throws instead of returning null, so every
+// access is wrapped and the page works the same without it.
 function remember(key, value) {
-  try { localStorage.setItem("pws." + key, value); } catch (e) { /* not worth a word */ }
+  try { localStorage.setItem("pws." + key, value); } catch (e) { /* ignore */ }
 }
 function remembered(key) {
   try { return localStorage.getItem("pws." + key); } catch (e) { return null; }
 }
 
-// A playlist that is always up, needs no resolving and belongs to nobody in
-// particular: the way to tell a receiver that will not play from a site whose stream
-// never arrived. Apple hosts it as their own HLS example, so it outlives most of what
-// anyone would otherwise paste in here to test with.
+// A test playlist that is always up and needs no resolving. It separates a receiver
+// that will not play from a site whose stream never arrived. Apple hosts it as their
+// HLS example, so it is more reliable than most test URLs.
 const SAMPLE = "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8";
 
-// Straight to resolving: the link has nothing left for anyone to type, and focusing the
-// field only put a keyboard over the card the answer arrives in.
+// Resolve straight away. There is nothing to type, and focusing the field would open
+// a keyboard over the result card.
 $("sample").addEventListener("click", (ev) => {
   ev.preventDefault();
   $("url").value = SAMPLE;
@@ -403,11 +383,9 @@ $("opts").addEventListener("toggle", () => remember("opts", $("opts").open ? "1"
 
 // --------------------------------------------------------------------------- resolving
 
-// The server's progress lines are written for whoever is reading the log at eleven at
-// night. They are not written for someone holding a phone in front of a television,
-// which is who is watching this card, so they are translated on the way out. Anything
-// unmapped falls through unchanged: a line nobody has seen yet is still better read
-// than swallowed.
+// The server's progress lines are written for someone reading the log. This card is
+// read by someone holding a phone in front of a TV, so the lines are translated.
+// Unmapped lines are shown unchanged.
 const STAGE_TEXT = {
   "reading page HTML": "Reading the page",
   "no playlist in the HTML -- launching headless browser":
@@ -423,7 +401,7 @@ const STAGE_TEXT = {
 
 function stageText(raw) {
   if (STAGE_TEXT[raw]) return STAGE_TEXT[raw];
-  // Two of the browser's lines carry a count, so they are matched rather than looked up.
+  // Two of the browser's lines include a count, so they are matched by pattern.
   let m = /^scraping (\d+) frame/.exec(raw);
   if (m) return `Reading ${m[1]} frame${m[1] === "1" ? "" : "s"} of the page`;
   m = /^verifying (\d+) scraped candidate/.exec(raw);
@@ -437,19 +415,18 @@ let lastTried = "";
 
 function setBusy(on) {
   busy = on;
-  // The spinner takes the magnifier's place while a resolve is in flight: one thing
-  // in front of the words, either way, so the button does not change width as it goes.
+  // The spinner replaces the magnifier while resolving, so the button keeps its width.
   $("go").innerHTML = on
     ? `<span class="spin"></span><span class="lbl">Resolving\u2026</span>`
     : withIcon("magnifying-glass", "Resolve");
-  // Capacity has its own say over this button, and the ten-second refresh applies it
-  // while a resolve is in flight -- so both conditions are asked here, every time.
+  // Capacity also disables this button, and the ten-second refresh can run during a
+  // resolve, so both conditions are checked here every time.
   $("go").disabled = on || full;
   setTitle();
 }
 
-// The tab says what the page would, for someone who has it open behind another one:
-// whether a resolve is still going, and how many streams are running.
+// The tab title shows whether a resolve is running and how many streams are active,
+// for when the page is in a background tab.
 function setTitle() {
   const running = rows.size;
   document.title = busy ? "Resolving\u2026 \u00b7 Play web stream"
@@ -457,11 +434,9 @@ function setTitle() {
     : "Play web stream";
 }
 
-// The card is built once per resolve and grows a line per stage, rather than being
-// written out whole each time: rewriting it took the focus off Cancel at every stage
-// and made a screen reader start the list again from the top. Every stage but the last
-// is finished, so it gets a check; the last is what the server is doing now, so it gets
-// the spinner.
+// The card is built once per resolve and gains a line per stage. Rebuilding it each
+// time moved focus off Cancel and made screen readers restart the list. Finished
+// stages get a check; the current one gets the spinner.
 function beginProgress() {
   $("out").innerHTML = `
     <div class="card">
@@ -493,8 +468,8 @@ function addStage(text) {
   list.appendChild(line);
 }
 
-// `tail` is whatever the run ended with: a cancellation, or a lost connection with the
-// way back out of it. It takes Cancel's place.
+// `tail` is how the run ended: a cancellation, or a lost connection with a way to
+// retry. It replaces Cancel.
 function endProgress(tail) {
   const now = $("stages") && $("stages").querySelector(".now");
   if (now) finishStage(now);
@@ -512,9 +487,9 @@ function stop() {
 function startResolve(url) {
   if (!url || full) return;
   lastTried = url;
-  // type=url is happy with any scheme, and the server answers anything but http(s) with
-  // a plain 400 -- which EventSource cannot read and reports as a dropped connection,
-  // offering a Retry that can only fail the same way. Say what is wrong instead.
+  // type=url accepts any scheme, and the server answers non-http(s) with a plain 400.
+  // EventSource reports that as a dropped connection and offers a Retry that will fail
+  // again, so catch it here and explain.
   if (!/^https?:\/\//i.test(url)) {
     stop();
     showError({error: "That is not a web address",
@@ -550,17 +525,16 @@ $("f").addEventListener("submit", (ev) => {
   startResolve($("url").value);
 });
 
-// The server's message is one sentence with the detail after a dash, which reads as a
-// wall on a phone. The dash is the seam: what went wrong goes in the title, the rest
-// goes below it with the hint.
+// The server's message is one sentence with detail after a dash, which is hard to
+// read on a phone. Split at the dash: the problem becomes the title, and the detail
+// goes below with the hint.
 function showError(msg) {
   const raw = String(msg.error || "That did not resolve.");
   const cut = raw.indexOf(" -- ");
   const title = cut > 0 ? raw.slice(0, cut) : raw;
   const detail = cut > 0 ? raw.slice(cut + 4) : "";
   const hint = String(msg.hint || "");
-  // Every hint that says to paste the page URL is asking for the one thing this
-  // button does, which is to put the cursor back where that is typed.
+  // A hint saying to paste the page URL gets a button that focuses the URL field.
   const offerPaste = /paste the page URL/i.test(hint);
   $("out").innerHTML = `
     ${lastTried ? `<p class="muted tried">Tried <code>${esc(lastTried)}</code></p>` : ""}
@@ -584,10 +558,9 @@ function showResult(r) {
   const how = r.needs_proxy
     ? (r.reused ? "Re-used a proxy already serving this stream." : "Served through the proxy.")
     : "No proxy needed \u2014 this is the origin URL.";
-  // Only when no proxy was needed. A proxied stream has a card of its own below, and
-  // two controls for the one hand-off would just disagree with each other. The origin
-  // URL travels with the buttons, since with no proxy running there is no instance for
-  // the server to look the stream up in.
+  // Only when no proxy was needed. A proxied stream has its own card below, and two
+  // controls for one hand-off could disagree. The origin URL is sent with the buttons
+  // because with no proxy running the server has no instance to look it up in.
   const cast = r.needs_proxy ? "" : airplayPicker(r.playlist, r.playback_url);
   $("out").innerHTML = `
     <div class="card">
@@ -625,10 +598,10 @@ function showResult(r) {
 
 // --------------------------------------------------------------------------- streams
 
-// One fetch answers the whole AirPlay picture: whether pyatv is here, which receivers
-// answered, which of them are paired, what is playing on each, and whether a pairing
-// is part-way through -- so a reload lands back in the flow rather than beside it.
-// `scan` is the deliberate slow path and is only ever passed by the button.
+// One fetch returns all AirPlay state: whether pyatv is installed, which receivers
+// answered, which are paired, what each is playing, and whether a pairing is in
+// progress, so a reload resumes where it left off. `scan` is the slow path and only
+// the button passes it.
 async function refreshAirplay(scan) {
   let a = {};
   try {
@@ -654,9 +627,8 @@ function applyCapacity(cap) {
                `All ${cap.limit} stream${cap.limit === 1 ? "" : "s"} are running. `
                + "Stop one to start another.")
     : "";
-  // The long version -- that the limit is the range of ports published to this
-  // machine, so a further stream would serve where nothing listens -- is true and is
-  // not what a full page needs to say out loud.
+  // The limit is the published port range; a further stream would serve on a port
+  // nothing can reach. The page does not need to explain that.
   $("full").title = "The limit is the range of ports published to this machine.";
   $("go").disabled = full || busy;
 }
@@ -668,10 +640,9 @@ async function loadStreams() {
     streams = body.streams; capacity = body.capacity;
   } catch (e) { return; }
   applyCapacity(capacity);
-  // Each stream arrives with the receivers it is playing on. Without this the picker
-  // knew only what /api/airplay said at the last tap, so a television that finished, or
-  // a hand-off made from another phone, left a button offering the wrong half of the
-  // toggle until the page was reloaded.
+  // Each stream includes the receivers playing it. Otherwise the picker only knew
+  // /api/airplay's answer from the last tap, so a finished TV or a hand-off from
+  // another phone left the toggle showing the wrong state until a reload.
   for (const s of streams) {
     if (Array.isArray(s.airplay)) airplaySessions[s.source] = s.airplay;
   }
@@ -680,11 +651,9 @@ async function loadStreams() {
   setTitle();
 }
 
-// This list used to be written out whole every ten seconds, which threw away
-// everything the person using it was in the middle of: an open log and where they had
-// scrolled it, a button reading "Starting…", the focus ring, a Details left open. A
-// row belongs to its source and now outlives the refresh; only the text inside it
-// moves.
+// Rows are keyed by source and survive the ten-second refresh; only their text
+// changes. Rebuilding the list lost open logs and their scroll position, buttons
+// reading "Starting…", focus, and open Details.
 const rows = new Map();
 let logSeq = 0;
 
@@ -705,9 +674,8 @@ function syncRows(streams) {
   }
 }
 
-// A stream that stopped -- by the button, or by its own idle timeout -- leaves the card
-// above still offering its URL, and that URL now leads nowhere. Say so, and offer the
-// one thing that would bring it back.
+// When a stream stops (by the button or its idle timeout), the card above still shows
+// its URL, which no longer works. Mark it as stopped and offer to start it again.
 function retire(source) {
   if (!lastResult || !lastResult.needs_proxy || lastResult.playlist !== source) return;
   lastResult = null;
@@ -811,8 +779,8 @@ function updateRow(row, s) {
     .map(m => `<div class="warn">${withIcon("exclamation-triangle", m)}</div>`).join("");
   if (row.warns.innerHTML !== warns) row.warns.innerHTML = warns;
 
-  // The picker is rebuilt only when it would come out different, because rebuilding it
-  // is what used to eat a button reading "Starting…" a second after it was tapped.
+  // Rebuild the picker only when it has changed. Rebuilding it every time reset a
+  // button reading "Starting…" a second after it was tapped.
   const ap = airplayPicker(s.source);
   if (row.apSig !== ap) {
     row.apSig = ap;
@@ -828,15 +796,15 @@ function updateRow(row, s) {
   }
 }
 
-// The row is a place, not a URL: the site a stream came from is what tells two of them
-// apart at a glance, and it fits on a phone where the URL does not.
+// The row is labelled with the source site, which distinguishes streams at a glance
+// and fits on a phone screen.
 function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return url; }
 }
 
-// A playback URL is a host, a token and a path, and the token is the part that tells
-// two streams apart -- so when the row has no room for all of it, the middle goes
-// rather than the end. The whole of it stays in the title and in Details.
+// A playback URL is a host, a token and a path, and the token distinguishes streams.
+// When the row is too narrow, cut from the middle, not the end. The full URL stays in
+// the title and in Details.
 function middle(text, budget) {
   if (text.length <= budget || budget < 16) return text;
   const head = Math.ceil((budget - 1) / 2);
@@ -855,9 +823,8 @@ addEventListener("resize", () => {
   fitTimer = setTimeout(() => rows.forEach(row => fitUrl(row.url)), 150);
 });
 
-// What the player page reports, as a line for someone who is not reading a log. The
-// raw line stays in Details, because the fields are the thing worth having when a
-// stream is misbehaving.
+// The player page's report, as a readable line. The raw line stays in Details, because
+// its fields are useful for debugging a stream.
 const PLAYER_EVENT = {
   playing: "Playing", play: "Playing", tick: "Playing", canplay: "Ready to play",
   loadedmetadata: "Loading", waiting: "Buffering", stalled: "Buffering",
@@ -879,21 +846,20 @@ function humanPlayer(line) {
   const at = Number(fields.t);
   const where = Number.isFinite(at) && at > 0
     ? `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, "0")} in` : "";
-  // The stamp on the line is the proxy's clock, not this phone's. Turning it into "3
-  // seconds ago" would be arithmetic across two clocks that need not agree, so it is
-  // shown as the time it is.
+  // The timestamp is from the proxy's clock, not this phone's, and the two may differ.
+  // So it is shown as a time, not as "3 seconds ago".
   const stamp = /^(\d\d:\d\d:\d\d)/.exec(line);
   return [what, where, stamp ? "last heard " + stamp[1] : ""].filter(Boolean).join(" \u00b7 ");
 }
 
-// The whole proxy log, not just the [player] lines the row already shows: when a
-// stream will not start, the reason is usually a line nobody thought to look for.
+// The full proxy log, not just the [player] lines the row shows. When a stream will
+// not start, the reason is usually elsewhere in the log.
 const openLogs = new Set();
 
 async function fillLog(row) {
   row.log.hidden = false;
-  // Refilling resets the scroll, which on an open log is the person's place in it.
-  // Follow the tail only for someone already at the tail.
+  // Refilling resets the scroll position. Only follow the end if the user was
+  // already scrolled to it.
   const atEnd = row.log.scrollTop + row.log.clientHeight >= row.log.scrollHeight - 4;
   const place = row.log.scrollTop;
   let text;
@@ -908,23 +874,21 @@ async function fillLog(row) {
   row.log.scrollTop = atEnd ? row.log.scrollHeight : place;
 }
 
-// Errors live in state, not on the button. The card is re-rendered wholesale every
-// few seconds, and a message written onto a button does not survive that -- which
-// meant a failure could vanish before it had been read.
+// Errors are kept in state, not on the button. The card is re-rendered every few
+// seconds, which cleared messages on buttons before anyone could read them.
 //
-// Keyed by stream *and* receiver, because a receiver that pairs happily and then
-// refuses the hand-off is a thing that happens: one message per stream would let the
-// working television's row hide the failing one's reason.
+// Keyed by stream and receiver, because a receiver can pair and then refuse the
+// hand-off. With one message per stream, a working TV's row could hide another's
+// error.
 const actionErrors = new Map();
 const errorKey = (source, receiver) => source + "\u0000" + (receiver || "");
 const errorsFor = (source) => [...actionErrors]
   .filter(([key]) => key.slice(0, key.indexOf("\u0000")) === source)
   .map(([, message]) => message);
 
-// A tap that ends something asks once, in the label, because a confirm dialog on a
-// phone is a second thing to aim at. The question goes back to being a button on its
-// own after a moment: a page left mid-question in a pocket should not be one tap away
-// from stopping a stream an hour later.
+// A destructive tap asks for confirmation in the button label instead of a dialog,
+// which is awkward on a phone. The label resets after a moment, so a page left in a
+// pocket is not one tap from stopping a stream an hour later.
 function arm(button, question, run) {
   if (button.dataset.armed === "1") {
     disarm(button);
@@ -949,11 +913,10 @@ function disarm(button) {
 // --------------------------------------------------------------------------- AirPlay
 
 // One button per paired receiver, and one Stop per receiver already playing this
-// stream -- a session is per (stream, receiver), so two televisions showing the same
-// thing are two buttons rather than one that has to guess. A remembered receiver that
-// did not answer gets no button either: it is on the list to be reported on, and the
-// server would refuse the hand-off. Unpaired receivers are not
-// offered here: pairing is its own flow, in its own card below.
+// stream. Sessions are per (stream, receiver), so two TVs showing the same stream get
+// two buttons. A remembered receiver that did not answer gets no button, because the
+// server would refuse the hand-off; it is still listed. Unpaired receivers are not
+// shown here; pairing has its own card below.
 function airplayPicker(source, url) {
   if (!airplayAvailable) return "";
   const live = (airplaySessions[source] || []);
@@ -968,12 +931,10 @@ function airplayPicker(source, url) {
   return stop.concat(start).join("");
 }
 
-// The glyph is the AirPlay mark itself -- a screen with the beam under it -- and not
-// the typographic triangle that used to stand in for it, which read as a bullet point.
-// It is the shape somebody's eye is hunting for in a row of buttons in front of a
-// television, and it stays the same on the button that ends a hand-off: that button is
-// the AirPlay control for a receiver already playing, and the stream's own Stop is
-// beside it wearing the stop glyph. The word on the button is what tells them apart.
+// Uses the AirPlay mark, which people look for in front of a TV. The button that ends
+// a hand-off keeps the same icon, because it is the AirPlay control for a receiver
+// already playing; the stream's own Stop, beside it, has the stop icon. The button
+// text tells them apart.
 function airplayButton(source, url, address, label, on) {
   return `<button class="ghost" data-icon="airplay" data-airplay="${esc(source)}"
     data-receiver="${esc(address)}" data-on="${on ? "1" : ""}"${
@@ -981,8 +942,8 @@ function airplayButton(source, url, address, label, on) {
     on ? " — stop" : ""}">${withIcon("airplay", label)}</button>`;
 }
 
-// The hand-off holds a session open, so the button toggles: the same receiver that
-// took the stream is the one asked to give it back.
+// The hand-off keeps a session open, so the button toggles it on and off for that
+// receiver.
 function bindAirplay(button) {
   button.onclick = async () => {
     const source = button.dataset.airplay;
@@ -1000,9 +961,8 @@ function bindAirplay(button) {
                               url: button.dataset.url || ""})})).json();
     } catch (e) { res = {error: String(e)}; }
     if (res.error) actionErrors.set(errorKey(source, res.receiver || receiver), res.error);
-    // Rows now survive a refresh, so a hand-off that failed would leave this button
-    // reading "Starting…" for ever. Put it back; a hand-off that worked changes the
-    // picker underneath it anyway.
+    // Rows survive a refresh, so a failed hand-off would leave "Starting…" on this
+    // button indefinitely. Restore it; a successful hand-off rebuilds the picker anyway.
     button.disabled = false;
     setLabel(button, idle);
     await refreshAirplay();
@@ -1011,9 +971,8 @@ function bindAirplay(button) {
   };
 }
 
-// A remembered receiver is listed whatever the scan made of it, so the row has to say
-// which of three things it is: ready, silent, or a television that has been reset and
-// no longer knows us. Only the last two are news, so only they are coloured.
+// A remembered receiver is listed whatever the scan found, so the row shows its state:
+// ready, not answering, or reset and no longer paired. Only the last two are coloured.
 function receiverState(receiver) {
   if (!receiver.seen) return `<span class="muted warn">${withIcon("no-symbol", "No answer")}</span>`;
   if (receiver.paired) return `<span class="live">${withIcon("check-circle", "Paired")}</span>`;
@@ -1027,10 +986,9 @@ function receiverState(receiver) {
             withIcon("link", "Pair")}</button>`;
 }
 
-// available:false is two different facts wearing one flag. pyatv may be missing on the
-// server; or this client is one the server will not hand a television to -- loopback,
-// or an address outside the LAN it advertises. The page can tell the loopback case
-// apart on its own, and nothing else can, so that is the one it names.
+// available:false means either pyatv is missing on the server, or the server will not
+// allow AirPlay from this client (loopback, or outside the advertised LAN). The page
+// can detect loopback itself, so it names that case.
 function airplayOff() {
   const here = location.hostname;
   if (here === "localhost" || here === "127.0.0.1" || here === "::1" || here === "[::1]") {
@@ -1041,13 +999,13 @@ function airplayOff() {
        + "is not on the LAN the app advertises.";
 }
 
-// Pairing, which is the one step between a fresh deploy and any of this working, and
-// which used to be a shell inside the container. Two requests, because the receiver
-// shows its PIN only once pairing has begun -- so the card has two shapes, and the
-// server's `pairing` tells us which to draw after a reload.
+// Pairing, needed after a fresh deploy before AirPlay works. It used to need a shell in
+// the container. It takes two requests, because the receiver shows its PIN only after
+// pairing starts. The card has two states, and the server's `pairing` says which to
+// show after a reload.
 //
-// The card itself is never hidden. Hiding it meant the one feature this app exists for
-// was, to anyone who had not already got it working, not there at all.
+// The card is always shown. When it was hidden, users who had not set up AirPlay could
+// not find the feature.
 function renderAirplay() {
   $("pairhint").hidden = !(airplayAvailable && !airplayPairing
                            && !airplayReceivers.some(r => r.paired));
@@ -1071,8 +1029,7 @@ function renderAirplay() {
       </div>
     </div>`).join("");
 
-  // Anything that refreshes this card rewrites it, PIN field included, and a PIN
-  // half-typed when some other button was tapped would otherwise go with it.
+  // A refresh rewrites this card, PIN field included, so save a half-typed PIN first.
   const typed = $("pin") ? $("pin").value : "";
   const waiting = airplayPairing ? `
     <div class="row" style="margin-top:12px">
@@ -1106,8 +1063,8 @@ function renderAirplay() {
     await pairPost({action: "begin", host: b.dataset.pair});
   });
 
-  // Forgetting drops the address, not the credentials: a later sweep that finds the
-  // television again finds it paired. Say so, so the button is not mistaken for one.
+  // Forgetting removes the address but keeps the credentials, so a later sweep finds
+  // the TV already paired. Tell the user, so it is not mistaken for unpairing.
   $("airplay").querySelectorAll("[data-forget]").forEach(b =>
     b.onclick = () => arm(b, "Forget? tap again", async () => {
       b.disabled = true;
@@ -1122,7 +1079,7 @@ function renderAirplay() {
       if (res.error) pairError = res.error;
       else airplayReceivers = res.receivers || [];
       renderAirplay();
-      loadStreams();      // one button per stream has just gone
+      loadStreams();      // each stream's button for this receiver is gone
     }));
 
   const ok = $("pinOk"), no = $("pinNo"), pin = $("pin");
@@ -1136,8 +1093,8 @@ function renderAirplay() {
   if (no) no.onclick = () => pairPost({action: "cancel"});
 
   $("apscan").onclick = async () => {
-    // The tap can land on the glyph inside the button rather than the button, and
-    // ev.target is then an <svg> with nothing to disable. Take it by name.
+    // A tap on the icon makes ev.target the <svg>, which cannot be disabled, so look
+    // the button up by name.
     const button = $("apscan");
     button.disabled = true;
     setLabel(button, "Sweeping\u2026");
@@ -1156,7 +1113,7 @@ async function pairPost(body) {
   } catch (e) { res = {error: String(e)}; }
   if (res.error) pairError = res.error;
   await refreshAirplay();
-  loadStreams();          // a freshly paired receiver is a new button on every stream
+  loadStreams();          // a newly paired receiver adds a button to every stream
 }
 
 let airplayAvailable = false;
@@ -1165,26 +1122,23 @@ let airplaySessions = {};
 let airplayPairing = null;
 let pairError = "";
 let lastResult = null;
-// Focus the field only where there is a mouse. On a phone it put a keyboard over half
-// the page on every load, and the phone is as likely to be here to stop a stream or
-// pair a television as to paste anything.
-// The last URL resolved comes back in the field, because the usual reason to open this
-// page again is that the stream it gave timed out. It arrives selected, so pasting a
-// different one replaces it rather than landing on the end of it.
+// Focus the field only with a mouse. On a phone it opened a keyboard over half the
+// page on every load, and phone users often come to stop a stream or pair a TV.
+// The last resolved URL is restored, because people usually return when a stream has
+// timed out. It is selected, so pasting a new one replaces it.
 const lastUrl = remembered("url");
 if (lastUrl && !$("url").value) $("url").value = lastUrl;
 $("url").addEventListener("focus", () => {
   if (lastUrl && $("url").value === lastUrl) {
-    // iOS places the caret after the focus event, so the selection has to wait for it.
+    // iOS places the caret after the focus event, so select after it.
     setTimeout(() => $("url").setSelectionRange(0, $("url").value.length), 0);
   }
 });
 if (matchMedia("(pointer: fine)").matches) $("url").focus();
 
-// Where upstream fetches leave from. Worth a line on the page rather than only in the
-// log: somebody watching a stream has no other way to tell whether the tunnel they set
-// up is the one the origin is seeing, and a tunnel that quietly stopped looks from here
-// exactly like one that is working.
+// Where upstream fetches leave from. Shown on the page, not only in the log, because
+// otherwise the viewer cannot tell whether the origin sees their tunnel, and a tunnel
+// that has stopped looks the same as one that works.
 function showEgress(e) {
   const el = $("egress");
   if (!e || !e.enabled) return;
@@ -1204,13 +1158,13 @@ function showEgress(e) {
 
 Promise.allSettled([
   fetch("/api/egress").then(r => r.json()).then(showEgress),
-  // No sweep here. Named receivers are a handful of unicast probes the server caches;
-  // the /24 is the button in the card, because 254 of them is not a page load.
+  // No sweep on load. Named receivers are a few cached unicast probes; sweeping the
+  // /24 (254 probes) is left to the button in the card.
   refreshAirplay(false),
 ]).then(loadStreams);
 setInterval(loadStreams, 10000);
-// A phone taken out of a pocket should show what is running now, not what was running
-// up to ten seconds ago -- which is often the stream it just stopped from the sofa.
+// Refresh when the page becomes visible, so a phone shows current streams instead of
+// ones up to ten seconds old.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") loadStreams();
 });

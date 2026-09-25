@@ -1,9 +1,8 @@
-"""A stand-in for the origins this proxy exists to cope with.
+"""A fake origin with a switch for each awkward behaviour the proxy handles.
 
-Every awkward behaviour the code claims to handle is a switch here: a Referer gate, a
-gate on the client itself, segments served as the wrong type, presigned URLs that
-expire, ranges, a playlist whose window slides so segments fall off the back of it, and
-one that is a finished programme rather than a live edge.
+Switches: a Referer gate, a client gate, segments served as the wrong type, expiring
+presigned URLs, ranges, a sliding window that drops old segments, and a finished (VOD
+or EVENT) playlist.
 """
 
 import socket
@@ -13,9 +12,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 TS_PACKET = b"\x47" + b"\x00" * 187
 SEGMENT = TS_PACKET * 40                # sniffs as video/MP2T, served as text/plain
 
-# Exactly what one origin puts in front of every segment so an image CDN will carry it:
-# a valid RIFF/WEBP header, 42 bytes, and then the MPEG-TS. Byte for byte the shape seen
-# in the wild, so the offset the proxy finds here is the offset it finds there.
+# One real origin prefixes every segment with this so an image CDN will carry it: a
+# 42-byte RIFF/WEBP header, then the MPEG-TS. Same bytes as seen in the wild, so the
+# proxy finds the same offset.
 WEBP_SHIM = b"RIFF" + b"\x00" * 4 + b"WEBPVP8L" + b"\x00" * 26
 
 MASTER_WITH_AUDIO = ("#EXTM3U\n"
@@ -38,17 +37,16 @@ class FakeOrigin:
                  master=MASTER_WITH_AUDIO, window=2, client_gate=None, shim=b"",
                  playlist_type=None):
         self.referer = referer          # None serves anyone; a string gates on it
-        # A header the origin insists on before it reads anything else, standing in for
-        # a TLS fingerprint check: over plain HTTP there is no handshake to screen, so
-        # the origin looks for something only the impersonating client sends instead.
+        # Stands in for a TLS fingerprint check. Plain HTTP has no handshake to screen,
+        # so the origin requires a header only the impersonating client sends.
         self.client_gate = client_gate
         self.segment_type = segment_type
         self.shim = shim                # bytes glued in front of the media, if any
         self.ranges = ranges
         self.master = master
         self.window = window            # segments advertised per media playlist
-        # "VOD" or "EVENT": a playlist that keeps every segment, and for VOD says so
-        # with an #EXT-X-ENDLIST, the shape of Apple's own bipbop example.
+        # "VOD" or "EVENT": keeps every segment. VOD also ends with #EXT-X-ENDLIST, like
+        # Apple's bipbop example.
         self.playlist_type = playlist_type
         self.sequence = 0               # bumped to slide the window forward
         self.gone = set()               # segment names the origin has dropped
@@ -109,12 +107,11 @@ class FakeOrigin:
     def answer(self, path, headers):
         name = path.split("?")[0].lstrip("/")
         referer, rng = headers.get("Referer"), headers.get("Range")
-        # A client gate sees nothing but the client: page and media alike, whatever
-        # the Referer, which is exactly what makes it look like a missing Referer.
+        # A client gate refuses page and media alike, whatever the Referer, which is
+        # why it can be mistaken for a missing Referer.
         if self.client_gate and self.client_gate not in headers:
             return 403, "text/plain", b"forbidden", None
-        # The page is open and the media is gated, which is the shape that makes the
-        # Referer worth discovering in the first place.
+        # Open page, gated media: the case where the Referer has to be discovered.
         if name.endswith(".html"):
             return 200, "text/html; charset=utf-8", self.page().encode(), None
         if self.referer and referer != self.referer:
@@ -126,7 +123,7 @@ class FakeOrigin:
         return 404, "text/plain", b"not found", None
 
     def page(self):
-        """A server-rendered player config, which is what discover() reads."""
+        """A server-rendered player config for discover() to read."""
         return ('<!doctype html><html><body><div id="player"></div>'
                 '<script>var cfg = {"file": "%s/master.m3u8", "type": "hls"};</script>'
                 "</body></html>" % self.url)
@@ -149,7 +146,7 @@ class FakeOrigin:
         if name in self.gone:
             return 403, "text/plain", b"expired", None
         # A CDN under load refuses a request it would serve a moment later, with the
-        # same codes an expired presign uses. Indistinguishable until it is asked again.
+        # same codes as an expired presign. Only a retry tells them apart.
         if self.flaky.get(name):
             self.flaky[name] -= 1
             return 404, "text/plain", b"not right now", None
@@ -164,7 +161,7 @@ class FakeOrigin:
         return 200, self.segment_type, data, None
 
     def slide(self, drop=True):
-        """Advance the live window, optionally letting the segment that fell off die."""
+        """Advance the live window and, if `drop`, expire the segment that fell off."""
         if drop:
             for stem in ("video", "audio"):
                 self.gone.add("%s%d.ts" % (stem, self.sequence))

@@ -1,7 +1,7 @@
-"""The segment cache, which is what makes the widened window serveable.
+"""The segment cache.
 
-accumulate() re-advertises segments the origin has already dropped. Without a copy
-here the player asks for one and gets a 404 -- the stall the window exists to prevent.
+accumulate() re-advertises segments the origin has already dropped. Without a cached
+copy the player gets a 404 for one and stalls, which the window is meant to prevent.
 """
 
 import pytest

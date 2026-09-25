@@ -1,80 +1,60 @@
 #!/usr/bin/env python3
-"""Hand a stream to an AirPlay receiver directly, instead of asking Safari to do it.
+"""Hand a stream to an AirPlay receiver directly, without Safari.
 
-AirPlay video never restreams: the receiver is given a URL and fetches it itself. The
-proxy already binds all interfaces and advertises a LAN address for exactly that
-reason, so the receiver can already reach our streams -- Safari is only acting as a
-remote control. This replaces that remote control, so a stream can be put on a TV from
-the web app rather than from whichever device happens to be in the room.
+AirPlay video does not restream: the receiver is given a URL and fetches it. The proxy
+binds all interfaces and advertises a LAN address for this reason, so Safari only acts
+as a remote control. This module replaces it, so the web app can put a stream on a TV.
 
-The hand-off itself goes through `airplay_protocol`, not pyatv's `play_url`, because
-modern receivers answer that older route with `501 Not Implemented`. What that
-buys, besides working, is certainty about the two things this module used to have to
-hedge against: the session is ours to hold, so playback lasts exactly as long as we
-keep feeding it, and it ends when we say rather than whenever a connection happens to
-drop.
+The hand-off goes through `airplay_protocol` because modern receivers answer pyatv's
+`play_url` with `501 Not Implemented`. Holding the session ourselves also means playback
+lasts as long as we keep feeding it, and ends when we stop it, not when a connection
+drops.
 
 Which receiver
 --------------
 
-There is more than one television in a house, so a receiver is chosen per hand-off
-rather than fixed at import, and a session remembers which one took it. Sessions are
-keyed by (source, receiver): the same stream can be running on two receivers at once,
-and each is stopped on its own.
+A house can have several TVs, so the receiver is chosen per hand-off. Sessions are keyed
+by (source, receiver): one stream can play on two receivers and each stops separately.
 
-Discovery is unicast. Multicast mDNS does not survive the docker bridge, and on this
-network it has never been shown to work at all, so `pyatv.scan` is always given
-`hosts=[...]` and never left to browse. That leaves two ways to fill the list, and the
-choice between them is deliberate:
+Discovery is unicast. Multicast mDNS does not cross the docker bridge and has never
+worked on this network, so `pyatv.scan` always gets `hosts=[...]`. The list is filled
+two ways:
 
-* `PWS_AIRPLAY_HOST` names addresses, comma-separated. This is what a page load uses.
-  It is a handful of unicast probes, it is cached for the life of the process, and it
-  costs nothing on a LAN that never changes.
-* `sweep()` looks at every address on a /24. It is how a receiver is found in the
-  first place, but 254 probes is not a thing to do on every page load, so it
-  never runs on one: it happens only when somebody asks for it. What it finds joins
-  the cached list and is then indistinguishable from a configured address.
+* `PWS_AIRPLAY_HOST`: comma-separated addresses, probed on page load and cached for the
+  life of the process.
+* `sweep()`: probes every address on a /24. Too slow (254 probes) for a page load, so it
+  runs only on request. What it finds joins the cached list.
 
-A paired receiver is also written down, beside the credentials, because otherwise a
-redeploy loses exactly half of what pairing produced. pyatv's storage keys credentials
-by device identifier and never records where the device was, so a container that comes
-back up still holds the keys to the television and no longer knows its address -- and
-the only way back is the sweep nobody wants to run twice. Remembered addresses are
-probed like configured ones, which is what makes a redeploy cost a handful of packets
-instead of 254. The web app probes them once at startup too, so the first page load
-finds the answer already waiting and the boot log says what the house looks like.
+Paired receivers are also saved beside the credentials. pyatv keys credentials by device
+identifier and does not store addresses, so after a redeploy the container would hold
+the keys but not know where the TV is, and would need another sweep. Saved addresses are
+probed like configured ones. The web app probes them at startup too, so the first page
+load is fast and the boot log shows which TVs answered.
 
-A remembered receiver stays on the list whatever the scan says about it, and carries
-what the scan said:
+A remembered receiver stays listed whatever the scan says, with its status:
 
-* it answered and is paired -- it can be handed a stream.
-* it answered and is not paired -- the credentials are gone from the receiver's side,
-  which is a thing a television does when it is reset. Saying so is the whole reason
-  this is not quietly dropped: the fix is to pair it again, and a receiver that has
-  vanished from the list tells nobody that.
-* it said nothing -- off, asleep, or moved to another address. `seen` is false and no
-  hand-off is offered, but it is still listed, because "the TV in the den is off" and
-  "there is no TV in the den" are different facts.
+* answered and paired: it can take a stream.
+* answered and not paired: the TV lost its credentials, usually after a reset. It stays
+  listed so the user knows to pair it again.
+* no answer: off, asleep, or moved. `seen` is false and no hand-off is offered. It stays
+  listed because "the TV is off" and "there is no TV" are different.
 
-So nothing is forgotten by a scan. `forget()` is how an entry leaves, and it is the
-only way. It drops the address and stops probing for it; the credentials in pyatv's
-storage are left where they are, since they are keyed by device and cost nothing, and a
-later sweep that finds the television again will find it already paired.
+A scan never removes an entry; only `forget()` does. That drops the address and stops
+probing it. The credentials stay in pyatv's storage (keyed by device), so a later sweep
+finds the TV already paired.
 
 Pairing
 -------
 
-Pairing is once per receiver, and pyatv's `FileStorage` keys credentials by device
-identifier, so one file holds as many receivers as have been paired: the container's
-`/config` volume, else `~/.config/play-web-stream/pyatv.conf`, else wherever
-`PWS_ATV_STORAGE` says.
+Pairing is once per receiver. pyatv's `FileStorage` keys credentials by device, so one
+file holds every paired receiver: `PWS_ATV_STORAGE` if set, else the container's
+`/config` volume, else `~/.config/play-web-stream/pyatv.conf`.
 
-It cannot be one request: the receiver displays its PIN only after pairing has begun,
-so the handler has to stay alive between being told to begin and being given the PIN.
-It lives on the same long-lived loop the playback sessions use. An attempt that nobody
-finishes is closed by `PAIR_TIMEOUT`, so an abandoned one does not wedge the next.
+It takes two requests, because the receiver shows its PIN only after pairing begins. The
+handler waits on the same long-lived loop as the playback sessions, and `PAIR_TIMEOUT`
+closes an abandoned attempt so it does not block the next.
 
-From a shell, the same thing in one step:
+From a shell, in one step:
 
     python3 airplay.py pair 192.168.1.50
     python3 airplay.py scan 192.168.1.0/24
@@ -105,11 +85,10 @@ HOSTS = [host.strip() for host in os.environ.get("PWS_AIRPLAY_HOST", "").split("
 def _default_storage():
     """Where pyatv credentials live when nobody says.
 
-    `/config` is the container's volume and is created by the image, so its presence
-    is what tells the two deployments apart: inside, credentials belong on the volume
-    that survives a rebuild; outside -- a checkout run straight from a shell -- there
-    is no such directory and writing to one that does not exist is how pairing used to
-    end. `PWS_ATV_STORAGE` still overrides both.
+    The image creates `/config`, so its presence means we are in the container and
+    credentials go on the volume that survives a rebuild. Outside the container there
+    is no `/config`, and writing there used to make pairing fail. `PWS_ATV_STORAGE`
+    overrides both.
     """
     if os.path.isdir("/config"):
         return "/config/pyatv.conf"
@@ -119,8 +98,8 @@ def _default_storage():
 
 STORAGE = os.environ.get("PWS_ATV_STORAGE") or _default_storage()
 
-# Beside the credentials, and for the same reason: both halves of a pairing have to
-# survive a rebuild, and pyatv's file holds only one of them.
+# Beside the credentials, so addresses survive a rebuild too. pyatv's file does not
+# store them.
 REMEMBERED = (os.environ.get("PWS_RECEIVERS")
               or os.path.join(os.path.dirname(STORAGE) or ".", "receivers.json"))
 
@@ -128,13 +107,13 @@ REMEMBERED = (os.environ.get("PWS_RECEIVERS")
 # publish a port it knows in advance. See airplay_protocol's module docstring.
 TIMING_PORT = int(os.environ.get("PWS_AIRPLAY_TIMING_PORT", "49170"))
 
-# PTP unless the receiver refuses it; see airplay_protocol's module docstring for why.
-# Pinning one is for a receiver that accepts PTP and then misbehaves on it.
+# PTP unless the receiver refuses it (see airplay_protocol's docstring). Set it for a
+# receiver that accepts PTP and then misbehaves on it.
 TIMING = os.environ.get("PWS_AIRPLAY_TIMING", "auto").strip().lower() or "auto"
 
 FD_WANT = 8192              # descriptors to ask for: a /24 of sockets, and slack
 FD_RESERVED = 128           # descriptors the rest of the process is assumed to want
-FD_MIN_BATCH = 32           # smallest sweep batch worth the round trip it costs
+FD_MIN_BATCH = 32           # smallest sweep batch; each batch waits a full timeout
 
 SCAN_TIMEOUT = 8
 SWEEP_TIMEOUT = 20          # a /24 at once, rather than a handful of named addresses
@@ -156,11 +135,10 @@ _pairing = None             # {"handler", "storage", "name", "address", "timer"}
 
 
 def available():
-    """Whether direct AirPlay can do anything at all.
+    """Whether direct AirPlay is usable, i.e. pyatv is installed.
 
-    Configuration is no longer part of this. Pairing happens in the app now, and a
-    receiver can be found by sweeping, so an unconfigured install is not a dead end --
-    it is the state the pairing UI exists for. Only a missing pyatv is.
+    No configuration is needed: receivers can be found by sweeping and paired in the
+    app.
     """
     return pyatv is not None
 
@@ -169,12 +147,10 @@ def receivers(refresh=False):
     """What we know of, as [{"name", "address", "identifier", "paired", "seen",
     "remembered"}].
 
-    Cached, because this is on the page-load path and a scan is a network round trip.
-    `paired` says whether credentials for that device are in storage, which is the
-    difference between a receiver that can be handed a stream and one that can only be
-    paired. `seen` says whether it answered this scan at all: a remembered receiver
-    that is switched off is reported rather than dropped, and for it `paired` is the
-    last thing we knew rather than anything just established.
+    Cached, because this runs on page load and a scan is a network round trip.
+    `paired` means credentials for the device are in storage, so it can take a stream.
+    `seen` means it answered this scan. For a remembered receiver that is switched off,
+    `paired` is the last known value.
     """
     global _receivers
     if not available():
@@ -190,9 +166,8 @@ def receivers(refresh=False):
 def sweep(network):
     """Look at every address on `network`, and keep what answered.
 
-    This is the slow, deliberate path: it is never run on a page load, only when
-    somebody asks for it. Addresses already known are included even when they sit
-    outside the network being swept, so asking again cannot lose one.
+    The slow path, run only on request. Known addresses outside `network` are
+    included too, so a sweep cannot lose one.
     """
     global _receivers, _extra
     if not available():
@@ -218,8 +193,8 @@ def sweep(network):
 def remember(address):
     """Probe one address and keep it, for a receiver named rather than found.
 
-    The picker only ever offers what discovery turned up, so this is the way an
-    address that was typed -- on the command line -- gets onto that list at all.
+    The picker only offers discovered receivers, so this is how an address typed on
+    the command line gets onto the list.
     """
     if not available():
         raise RuntimeError("pyatv is not installed")
@@ -230,10 +205,9 @@ def remember(address):
 
 
 def state(receiver):
-    """The one thing worth saying about a row, in the order the answers matter.
+    """A row's status as a short phrase.
 
-    Public because the boot log says it too, and one wording for the shell, the log and
-    the card is one fewer thing to keep in step.
+    Public so the shell, the boot log and the UI card share one wording.
     """
     if not receiver["seen"]:
         return "remembered, no answer"
@@ -245,16 +219,14 @@ def state(receiver):
 def forget(address):
     """Stop remembering a receiver, and stop probing for it.
 
-    The only way an entry leaves the list, since a scan never removes one. What goes is
-    the address: the credentials stay in pyatv's storage, keyed by device rather than
-    by where it lives, so a sweep that turns the television up again turns it up
-    already paired. An address that came from `PWS_AIRPLAY_HOST` cannot go at all --
-    the next page load would read it straight back out of the environment -- so that is
-    said plainly rather than half-done.
+    A scan never removes an entry, so this is the only way. Only the address goes: the
+    credentials stay in pyatv's storage, keyed by device, so a later sweep finds the TV
+    already paired. An address from `PWS_AIRPLAY_HOST` cannot be forgotten, since the
+    next page load would read it back from the environment, so that raises.
 
-    The list afterwards is `receivers()`, not something returned from here: this drops
-    a row from the cache but does not stand in for having one, and a caller on a
-    process that has not scanned yet should get a scan rather than an empty answer.
+    Call `receivers()` for the updated list. This drops a row from the cache but does
+    not fill it, and a process that has not scanned yet should scan, not get an empty
+    list.
     """
     global _receivers, _extra
     if not available():
@@ -278,11 +250,10 @@ def forget(address):
 def status():
     """What is playing where, dropping sessions the receiver has finished with.
 
-    The keepalive task ends for two reasons: the receiver reported the item stopped,
-    or feeding it failed. Neither leaves anything worth showing.
+    The keepalive task ends when the receiver reports the item stopped or feeding it
+    fails. Either way the session is dropped.
 
-    Keyed by source, but a list per source: the same stream may be on two receivers,
-    and collapsing them would be the assumption this module used to make.
+    Keyed by source, with a list per source, since one stream may be on two receivers.
     """
     dead = []
     live = {}
@@ -301,12 +272,11 @@ def status():
 
 
 def _say_ended(entry):
-    """Log why a session finished, because a stream ending is the thing we debug.
+    """Log why a session finished, since streams ending is what we debug most.
 
-    The two endings need telling apart. A receiver reporting the item stopped has
-    made a decision -- it ran out of media, or somebody picked up the remote. A
-    feedback that raised is the session being lost underneath us. Until this was
-    written the session simply vanished from the page and said neither.
+    A receiver reporting the item stopped means it ran out of media or someone used the
+    remote. A feedback call that raised means the session was lost. Before this, the
+    session vanished from the page with no reason logged.
     """
     task = entry["task"]
     if task.cancelled():
@@ -350,9 +320,8 @@ def stop(source, address=None):
 def pair_begin(address):
     """Ask a receiver to display its PIN, and hold the handler open for it.
 
-    Any attempt already in flight is closed first. Two half-finished pairings against
-    one receiver would fight over the same PIN, and the earlier one is by definition
-    the one nobody completed.
+    Any attempt in flight is closed first. Two pairings against one receiver would
+    fight over the same PIN, and the earlier one was abandoned.
     """
     if not available():
         raise RuntimeError("pyatv is not installed")
@@ -419,9 +388,9 @@ def pairing():
 def _get_loop():
     """One long-lived loop in a daemon thread.
 
-    The session outlives the request that made it -- something has to keep feeding the
-    receiver -- so it cannot live in a per-request asyncio.run(). Pairing needs the
-    same thing for the same reason: its handler spans two requests.
+    A session outlives its request (the receiver must be kept fed), so it cannot use a
+    per-request asyncio.run(). A pairing handler spans two requests for the same
+    reason.
     """
     global _loop
     with _lock:
@@ -439,16 +408,13 @@ def _call(coro, timeout):
 def _look(addresses, timeout):
     """Scan the addresses given, or nothing at all when there are none.
 
-    The empty case matters: pyatv reads `hosts=[]` as "browse", which is the multicast
-    scan this module exists without.
+    pyatv reads `hosts=[]` as "browse", i.e. a multicast scan, so the empty case
+    returns early.
 
-    A sweep is 254 addresses and pyatv holds a socket open for each one at the same
-    time, which is more descriptors than a process gets by default on macOS, where the
-    soft limit is 256 and the sweep dies with `[Errno 24] Too many open files`. So the
-    limit is raised where that is allowed, and the scan is run in batches that fit
-    inside whatever the limit turned out to be. Batching costs wall clock -- each
-    batch waits out `timeout` -- which is why the limit is raised first and the
-    batches are as large as the descriptors allow.
+    A sweep holds 254 sockets open at once. macOS's default soft limit is 256, so the
+    sweep died with `[Errno 24] Too many open files`. The limit is raised where allowed
+    and the scan runs in batches that fit. Each batch waits out `timeout`, so batches
+    are as large as the limit allows.
     """
     unique = list(dict.fromkeys(addresses))
     if not unique:
@@ -464,11 +430,9 @@ def _look(addresses, timeout):
 def _fd_batch():
     """How many addresses one scan may hold sockets for.
 
-    The soft limit is raised towards the hard one first, which on macOS turns 256 into
-    something a whole /24 fits inside; a sandbox that refuses keeps its limit and gets
-    smaller batches instead of a failed sweep. Half the headroom is left alone: the
-    proxies, the server's own sockets and pyatv's internals are all spending
-    descriptors out of the same budget.
+    Raises the soft limit towards the hard one first, which on macOS fits a whole /24.
+    If a sandbox refuses, batches get smaller instead of the sweep failing. Half the
+    headroom is left for the proxies, the server's sockets and pyatv itself.
     """
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     want = FD_WANT if hard == resource.RLIM_INFINITY else min(FD_WANT, hard)
@@ -482,7 +446,7 @@ def _fd_batch():
 
 
 def _addresses():
-    """Every address worth a probe: configured, learnt this run, remembered from a past one.
+    """Every address to probe: configured, learnt this run, and remembered.
 
     Read under `_receiver_lock`, since two of the three can be rewritten by a sweep.
     """
@@ -499,13 +463,11 @@ def _recall():
 
 
 def _keep(found):
-    """Write down what a scan turned up, so the next deployment starts knowing it.
+    """Save what a scan found, so the next deployment starts with it.
 
-    Pairing is what earns an address its line in the file: an unpaired receiver can do
-    nothing for us that a sweep could not establish again. An address already in the
-    file keeps its line whatever the scan said, and only has its name brought up to
-    date -- a receiver losing its credentials is news to report, not a reason to lose
-    the address as well. `forget()` is the way out.
+    Only paired receivers are added; an unpaired one can be found again by a sweep. An
+    address already in the file stays whatever the scan said, with its name updated,
+    so a receiver that lost its credentials is still reported. `forget()` removes it.
     """
     kept = {entry["address"]: entry for entry in _recall()}
     for receiver in found:
@@ -517,12 +479,11 @@ def _keep(found):
 
 
 def _merge(found):
-    """One list out of the scan and the file, each row saying where it came from.
+    """Merge the scan with the file, each row marked with where it came from.
 
-    A remembered receiver that did not answer is carried over as it was last known,
-    with `seen` false so that nothing offers to hand it a stream. Everything that did
-    answer is reported as the scan found it, `paired` included -- which is how a
-    television that has forgotten us becomes visible instead of merely absent.
+    A remembered receiver that did not answer keeps its last known state, with `seen`
+    false so no hand-off is offered. Receivers that answered are reported as scanned,
+    including `paired`, so a TV that lost its pairing shows as unpaired.
     """
     remembered = {entry["address"]: entry for entry in _recall()}
     rows = [dict(receiver, seen=True,
@@ -537,9 +498,9 @@ def _merge(found):
 def _read():
     """Whatever the file holds, or nothing.
 
-    Anything unreadable is nothing: this is a convenience that saves a sweep, so a file
-    that has been truncated or hand-edited into nonsense costs one sweep rather than a
-    process that will not start. Entries are rebuilt field by field for the same reason.
+    The file only saves a sweep, so a truncated or mangled file is treated as empty
+    and costs one sweep, not a failed start. Entries are rebuilt field by field for the
+    same reason.
     """
     try:
         with open(REMEMBERED) as handle:
@@ -559,10 +520,9 @@ def _read():
 def _store(entries):
     """Replace the file, when there is something new to say.
 
-    Written whole and renamed into place, because a page load reads it and a half
-    written list is worse than a stale one. A volume that will not take it is not worth
-    failing a scan over -- the addresses are still live in `_extra` for this process,
-    and the next deployment is no worse off than it was before the file existed.
+    Written to a temp file and renamed, because a page load reads it and a half-written
+    list is worse than a stale one. A write failure does not fail the scan: `_extra`
+    still holds the addresses for this process.
     """
     global _remembered
     entries = sorted(entries, key=lambda entry: (entry["name"].lower(), entry["address"]))
@@ -583,29 +543,27 @@ def _store(entries):
 def _protect_storage():
     """Keep the credentials file to ourselves, from the moment it exists.
 
-    `_storage()` tightens a file that is already there, which is no help the first
-    time pyatv writes one: it lands with whatever the umask allows and stays that way
-    until the next scan happens to tighten it. So the path that creates it says so too.
+    `_storage()` only tightens an existing file. The first time pyatv writes one it
+    gets the umask's permissions, so pairing calls this after saving.
     """
     try:
         os.chmod(STORAGE, 0o600)
-    except OSError:                 # not ours, or not there -- load() will complain
+    except OSError:                 # not ours, or not there; load() will report it
         pass
 
 
 async def _storage(loop):
     """pyatv's credential store, loaded, with somewhere to save itself to.
 
-    The directory is made here rather than at import: this is the only path that
-    writes, and a sweep on a machine that never pairs has no business creating
-    anything. A store that cannot be created is left to `load()` to complain about.
+    The directory is made here, not at import, so a machine that never pairs gets no
+    directory. If it cannot be created, `load()` reports the error.
     """
     try:
         os.makedirs(os.path.dirname(STORAGE) or ".", mode=0o700, exist_ok=True)
     except OSError:                                   # read-only, or not ours to make
         pass
     if os.path.exists(STORAGE):
-        _protect_storage()                            # credentials, not world readable
+        _protect_storage()
     storage = FileStorage(STORAGE, loop)
     await storage.load()
     return storage
@@ -629,11 +587,10 @@ async def _scan(addresses, timeout):
 
 
 def _known(address):
-    """The receiver at `address`, which has to be one we have actually found.
+    """The receiver at `address`, which must be one we have found.
 
-    The endpoints in front of this are already LAN-only, but that guards who may ask,
-    not where the request lands. Pairing reaches further than casting does, since it
-    writes credentials, so it is held to the list too.
+    The endpoints are LAN-only, but that limits who asks, not which address is
+    contacted. Pairing writes credentials, so it is limited to discovered receivers.
     """
     for receiver in receivers():
         if receiver["address"] == address:
@@ -645,9 +602,8 @@ def _known(address):
 def _target(address):
     """Which receiver a hand-off is for: the one named, or the only one there is.
 
-    A remembered receiver that did not answer the last scan is not a candidate for
-    either. It is on the list to be reported, not to be played to, and its `paired` is
-    a memory rather than a fact.
+    A remembered receiver that did not answer the last scan is excluded: it is listed
+    for reporting only, and its `paired` value may be stale.
     """
     if not available():
         raise RuntimeError("direct AirPlay is off; install pyatv")
@@ -701,9 +657,8 @@ async def _begin(url, target):
         await session.play(url, STEP_TIMEOUT)
     except BaseException as exc:
         session.close()
-        # Named, because pairing succeeding says nothing about the hand-off working:
-        # a receiver that pairs happily and then refuses this is a thing that happens,
-        # and one dead button for the house would not say which television it was.
+        # Name the receiver: some pair fine and then refuse the hand-off, and the
+        # error should say which TV.
         if isinstance(exc, Exception):
             raise RuntimeError("%s would not take the stream: %s" % (conf.name, exc)) from exc
         raise
@@ -720,8 +675,8 @@ async def _end(entry):
 def _reap(entry):
     """Drop a session the receiver has already finished with.
 
-    Nothing is asked of the receiver here, so nothing is waited on: this runs on the
-    streams poll, and a receiver that has gone quiet must not stall the whole page.
+    Sends nothing to the receiver and waits on nothing, because this runs on the
+    streams poll and an unresponsive receiver must not stall the page.
     """
     entry["task"].cancel()
     _get_loop().call_soon_threadsafe(entry["session"].close)
@@ -766,7 +721,7 @@ async def _pair_finish(entry, pin):
 
 
 def _pair_expire():
-    """Close an attempt nobody finished, rather than holding the receiver forever."""
+    """Close an abandoned pairing attempt."""
     with _pair_lock:
         global _pairing
         entry = _pairing
@@ -786,7 +741,7 @@ def _discard_pairing(entry):
 # --------------------------------------------------------------------------------- cli
 
 def _pair_interactive(address):
-    """The two-step pairing with a terminal standing in for the web UI."""
+    """The two-step pairing, driven from a terminal."""
     try:
         begun = pair_begin(address)
     except RuntimeError as exc:
@@ -821,8 +776,7 @@ def main(argv):
         print("pyatv is not installed", file=sys.stderr)
         return 1
     if len(argv) == 2 and argv[0] == "pair":
-        # An address typed here has not been discovered, and `pair_begin` only pairs
-        # what discovery found. Probing it is what puts it on that list.
+        # `pair_begin` only pairs discovered receivers, so probe the typed address first.
         try:
             remember(argv[1])
         except RuntimeError as exc:

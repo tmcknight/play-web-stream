@@ -1,18 +1,16 @@
 # play-web-stream
 
-Takes the URL of a page playing video. Gives back a URL that Safari's native player will
-play, so AirPlay, Picture-in-Picture and the scrubber all work.
+Turns a page playing video into a URL Safari's native player can play, with AirPlay,
+Picture-in-Picture and the scrubber.
 
 ## Why the AirPlay button is missing
 
-Web players (hls.js, Clappr, Plyr, Video.js, JW) push bytes through Media Source
-Extensions, and MSE has no AirPlay route. Those features live in AVFoundation, which
-means getting the stream into Safari's plain `<video>` element.
+Web players (hls.js, Clappr, Plyr, Video.js, JW) use Media Source Extensions, which has
+no AirPlay route. AirPlay needs AVFoundation, meaning Safari's plain `<video>` element.
+AVFoundation refuses segments with the wrong `Content-Type`, and CDNs often serve MPEG-TS
+as `text/plain`: the crossed-out play icon.
 
-AVFoundation is stricter about one thing: it refuses segments whose `Content-Type` is
-wrong, and CDNs often serve MPEG-TS as `text/plain`. That is the crossed-out play icon.
-
-So the job is:
+The steps:
 
 1. **Find** the real playlist (`.m3u8`) URL inside the page.
 2. **Probe** it. Are the segment MIME types usable? Does the origin require a `Referer`?
@@ -22,13 +20,13 @@ So the job is:
 
 - **[Command line](#run-it-from-the-command-line).** `hls_proxy.py`, standard library only.
 - **[Claude Code skill](#run-it-as-a-claude-code-skill).** `SKILL.md`, so Claude runs the
-  sequence and reads the logs.
-- **[Web app](#run-it-as-a-web-app).** Paste a page URL on your phone, send the result to
-  a television.
+  steps and reads the logs.
+- **[Web app](#run-it-as-a-web-app).** Paste a page URL on your phone and send the result
+  to a television.
 
 ## Run it from the command line
 
-`hls_proxy.py` is Python 3 standard library only. No install, no venv.
+No install or venv needed.
 
 ```sh
 # 1. Find the playlist URL in a page
@@ -43,29 +41,27 @@ python3 hls_proxy.py --source "<playlist-url>" [--referer "<page-origin>/"]
 
 If `--probe` says the types are fine, skip step 3 and open the playlist URL directly.
 
-The proxy binds `0.0.0.0` on the first free port from 8787, serves under a random path,
-signs its URLs with a per-process key (a forged URL gets a 404), and exits after 15
-minutes idle. It binds all interfaces because the Apple TV fetches the stream itself, so
-loopback would rule AirPlay out.
+The proxy binds `0.0.0.0` (the Apple TV fetches the stream itself) on the first free
+port from 8787. It serves under a random path, signs its URLs with a per-process key (a
+forged URL gets a 404), and exits after 15 minutes idle.
 
 ## Run it as a Claude Code skill
 
-`SKILL.md` is the same sequence written for Claude Code: discover, work out the headers,
-probe, start a proxy only if needed, then read the `[player]` log to confirm something is
-watching. It also covers expiring presigned URLs, sliding windows and origins that screen
-the client, so a stream that dies on segment three gets diagnosed.
+`SKILL.md` gives Claude Code the same steps: discover, work out headers, probe, proxy if
+needed, and check the `[player]` log for a viewer. It also covers expiring presigned
+URLs, sliding windows and origins that screen the client.
 
 ```sh
 ln -s "$PWD" ~/.claude/skills/play-web-stream
 ```
 
-`SKILL.md` refers to `~/.claude/skills/play-web-stream/hls_proxy.py`, which resolves
-through that symlink. Then ask for a page to play, or invoke the skill by name.
+`SKILL.md` calls `~/.claude/skills/play-web-stream/hls_proxy.py` through that symlink.
+Then ask for a page to play, or invoke the skill by name.
 
 ## Run it as a web app
 
-Paste a page URL, get a URL Safari will play, hand it to a television. Same steps as the
-CLI, without typing them.
+The CLI steps behind a page: paste a URL, get one Safari will play, send it to a
+television.
 
 ### Run it with Docker
 
@@ -73,34 +69,30 @@ CLI, without typing them.
 docker compose up -d --build            # http://<this-box>:8786/
 ```
 
-The image bundles chromium for the browser fallback, so the first build is slow.
+The image bundles Chromium for the browser fallback, so the first build is slow.
 
-`docker-compose.yml` uses `network_mode: host`. The Apple TV fetches the media URL
-itself, so that URL must carry a LAN address, and host networking lets the container work
-its own address out.
-
-Bridge networking works with the address supplied by hand:
+`docker-compose.yml` uses `network_mode: host` so the container can find its own LAN
+address, which the Apple TV needs in the media URL. For bridge networking, supply it:
 
 ```sh
 PWS_ADVERTISE_IP=192.168.1.10 \
   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d --build
 ```
 
-Then you handle this yourself:
+Then:
 
-- Publish the proxy port range up front, since each stream takes the next free port at
-  runtime. Move it with `PWS_PROXY_PORT` and `PWS_PROXY_PORT_LAST`. The container refuses
-  to start if a port in the range is busy.
-- On Docker Desktop every client appears as the VM gateway, so the `[player]` log can no
-  longer show segment requests coming from the Apple TV's address. Linux keeps the real
-  source address.
+- Publish the proxy port range, since streams take free ports at runtime. Set it with
+  `PWS_PROXY_PORT` and `PWS_PROXY_PORT_LAST`. The container won't start if a port in it is
+  busy.
+- On Docker Desktop every client appears as the VM gateway, so the `[player]` log can't
+  show requests from the Apple TV's address. Linux keeps real source addresses.
 
-The app warns at startup if it is about to advertise a docker bridge address.
+The app warns at startup if it would advertise a Docker bridge address.
 
 In Portainer: *Stacks, Add stack, Repository*, this repository's URL, compose path
-`docker-compose.portainer.yml` (the bridge overlay already applied, since a git stack
-takes one compose path), and `PWS_ADVERTISE_IP` set to the host's LAN address. The stack
-refuses to deploy without it, because a wrong address just looks like a broken stream.
+`docker-compose.portainer.yml` (bridge overlay included, as a git stack takes one path),
+and `PWS_ADVERTISE_IP` set to the host's LAN address. The stack won't deploy without it,
+because a wrong address looks like a broken stream.
 
 ### Run it without Docker
 
@@ -134,44 +126,41 @@ python3 -m venv .venv
 | `PWS_EGRESS_PROXY` | unset | Send every upstream fetch through this proxy. See [Keep your address private](#keep-your-address-private) |
 | `PWS_FORCE_PROXY` | on with `PWS_EGRESS_PROXY` | Proxy streams even when they need no fixing |
 
-Each stream gets its own proxy on its own port, so the published range is the number of
-streams that can run at once. Once every slot is taken, the Resolve button says which
-stream to stop. Restarting the container ends every stream it is serving.
+Each stream has its own proxy and port, so the port range sets how many streams can
+run. When it is full, the Resolve button says which stream to stop. Restarting the
+container ends all streams.
 
 ### AirPlay it to a television
 
-Every running stream gets a **▲ *name*** button per paired receiver, so the phone that
-found the stream is what starts it. The hand-off uses `airplay_protocol.py` and holds the
-session open, so the button becomes **Stop *name***. Sessions are per stream *and* per
-receiver.
+Each running stream gets a **▲ *name*** button per paired receiver. The hand-off uses
+`airplay_protocol.py` and keeps the session open; the button then reads **Stop *name***.
+Sessions are per stream *and* per receiver.
 
-**Pairing** happens once per receiver, in the *AirPlay receivers* card at the bottom of
-the page: press **Pair**, read the PIN off the television, type it in. The receiver only
-shows the PIN after pairing has begun, so the handler is held open from one request to
-the next and times out if nobody finishes. Credentials go to `/config/pyatv.conf`, or
+**Pairing** is once per receiver, in the *AirPlay receivers* card: press **Pair** and
+type in the PIN the television shows. The pairing handler stays open between the two
+requests and times out if unfinished. Credentials go to `/config/pyatv.conf`, or
 `~/.config/play-web-stream/pyatv.conf` from a checkout.
 
-**Finding receivers.** Addresses in `PWS_AIRPLAY_HOST` are probed on every page load and
-cached, since multicast mDNS does not cross the docker bridge. **Sweep the LAN** probes
-all 254 addresses on the advertised `/24`; it is a button rather than automatic because
-it takes a moment. Anything paired is written to `receivers.json` beside `pyatv.conf`, so
-the sweep is a one-off: pyatv's own credentials file keys devices by identifier and never
-records their addresses. Remembered addresses are probed at startup too, and listed:
+**Finding receivers.** mDNS doesn't cross the Docker bridge, so addresses in
+`PWS_AIRPLAY_HOST` are probed on each page load and cached. **Sweep the LAN** probes all
+254 addresses on the advertised `/24` (it takes a moment). Paired receivers are saved to
+`receivers.json` beside `pyatv.conf`, since pyatv doesn't record addresses, so one sweep
+is enough. Remembered addresses are probed and listed at startup:
 
 ```
 play-web-stream: 192.168.1.50 Family Room -- paired
 play-web-stream: 192.168.1.51 Bedroom -- remembered, no answer
 ```
 
-A remembered receiver keeps its row whatever a scan makes of it. The states:
+A remembered receiver stays listed whatever a scan finds:
 
 - **Paired.** Ready to be handed a stream.
 - **No answer.** Off, asleep or moved. Listed, but no button.
-- **Not paired any more.** It answered and has lost its credentials, which is what a
-  factory reset does. Comes with **Pair again**.
+- **Not paired any more.** It answered but lost its credentials (e.g. a factory reset).
+  Shows **Pair again**.
 
-Scans never remove anything. **Forget** drops the address and stops probing for it;
-credentials stay in `pyatv.conf`, keyed by device, so a later sweep finds it paired.
+Scans never remove anything. **Forget** drops the address and stops probing it;
+credentials stay in `pyatv.conf`, so a later sweep finds it paired.
 
 ```sh
 python3 airplay.py scan 192.168.1.0/24    # no network: probe configured and remembered
@@ -179,106 +168,95 @@ python3 airplay.py pair 192.168.1.50
 python3 airplay.py forget 192.168.1.50
 ```
 
-Pairing can succeed and playback still fail, since stock `play_url` fails on modern
-receivers. Failures are reported beside the button of the television that produced them.
+Pairing can succeed and playback still fail (stock `play_url` fails on modern
+receivers). Errors show beside that television's button.
 
 ## Keep it on the LAN, off the internet
 
-The app binds all interfaces so phones and Apple TVs can reach it, and refuses clients
-outside private address space. Do not give it a public hostname through
-nginx-proxy-manager or a Cloudflare tunnel: that makes it an open relay for third-party
-video under your domain and address, and sustained video through a tunnel breaks
-Cloudflare's terms anyway.
+The app binds all interfaces and refuses clients outside private address space. Don't
+expose it through nginx-proxy-manager or a Cloudflare tunnel: it becomes an open relay
+for third-party video under your domain and address, and sustained video breaks
+Cloudflare's terms.
 
-The AirPlay hand-off is stricter, because the server initiates it, and a viewer outside
-the house pressing that button would be using the server's access to the LAN. Forwarded
-requests arrive from `127.0.0.1`, which counts as private, so the client's address must
-instead sit in the same `/24` the proxies advertise. Loopback is refused with everything
-else off that subnet, so the button is absent on the box running the app.
+AirPlay is stricter because the server starts it, so a remote viewer would be using the
+server's LAN access. Forwarded requests arrive from `127.0.0.1`, which counts as private,
+so AirPlay requires the client to be in the advertised `/24`. Loopback is refused too, so
+the button doesn't appear on the machine running the app. Refused clients see nothing:
+`GET /api/airplay` reports `available: false`, `GET /api/receivers` returns an empty
+list, and `POST /api/airplay`, `POST /api/airplay/pair` and `POST /api/cast` answer 403.
+Pairing follows the same rule, since it writes credentials.
 
-Refused clients learn nothing: `GET /api/airplay` reports `available: false`,
-`GET /api/receivers` returns an empty list, and `POST /api/airplay`,
-`POST /api/airplay/pair` and `POST /api/cast` answer 403. Pairing is held to the same
-bar, since it writes credentials for a television in this house.
+With `network_mode: host` this is invisible. Under bridge networking every client
+arrives as the Docker gateway, off the advertised LAN, so the controls are off for
+everyone; the app warns at startup.
 
-Under `network_mode: host` this is invisible. Under bridge networking every client
-arrives as the docker gateway, off the advertised LAN, so the controls switch themselves
-off for everybody; the app says so at startup.
-
-Safari's own AirPlay route is unaffected: the client initiates it and its receivers come
-from link-local Bonjour. `SECURITY.md` has the rest.
+Safari's own AirPlay route is unaffected: the client starts it and finds receivers over
+Bonjour. See `SECURITY.md`.
 
 ## Which machine to run it on
 
-Run it on your home connection. Many origins tie segment URLs to the address that
-requested the page, so the proxy has to fetch from the same place your browser does. A
-cloud host is somewhere else, and gets refused. The proxies it starts are detached, so
-they survive a restart of the unit.
+Your home connection. Many origins tie segment URLs to the address that requested the
+page, so a cloud host gets refused. The proxies are detached and survive a restart of the
+unit.
 
 ## Keep your address private
 
-Stream origins and their CDNs log the address of everyone who fetches from them. To keep
-yours out of those logs, send upstream fetches through a proxy:
+Origins and CDNs log who fetches from them. To keep your address out, send upstream
+fetches through a proxy:
 
 ```sh
 PWS_EGRESS_PROXY=http://127.0.0.1:8888 python3 webapp.py
 python3 hls_proxy.py --source "<playlist-url>" --egress-proxy http://127.0.0.1:8888
 ```
 
-This is privacy, not access. It changes where the requests come from, not what you may
-watch: a stream you cannot play in your own browser will not play through this either.
+This changes where requests come from, not what you can watch. A stream your browser
+can't play won't play through this.
 
-`docker-compose.vpn.yml` stands one up as a sidecar on a commercial VPN, with the app
-outside its network. It uses gluetun, so any provider gluetun supports will do; the
-worked example is NordVPN:
+`docker-compose.vpn.yml` runs a commercial VPN as a gluetun sidecar, with the app outside
+its network. Any gluetun provider works; the example is NordVPN:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
 ```
 
-`VPN_PROVIDER` names the provider (`nordvpn` if unset), `VPN_PRIVATE_KEY` its wireguard
-key, and `VPN_COUNTRIES` the exit -- the country you are in. Nord's key comes from their
-API with an access token, not from the dashboard; that compose file's header has the
-commands and says where the token is issued. The values go in a `.env` beside it, which
-`.gitignore` already covers.
+Set `VPN_PROVIDER` (default `nordvpn`), `VPN_PRIVATE_KEY` (WireGuard key) and
+`VPN_COUNTRIES` (exit country: the one you are in) in a `.env` beside it, which
+`.gitignore` covers. Nord's key comes from their API with an access token, not the
+dashboard; the compose file's header has the commands and where to get the token.
 
-A sidecar, because Safari and the Apple TV fetch *from* this app over the LAN, so it has
-to keep a LAN address; a VPN namespace takes that away. The split is by destination
-instead. Upstream goes through the proxy: playlist, segments, header probe, and the
-headless browser. Local stays direct: loopback, the private ranges, link-local, `*.local`
-and anything in `no_proxy`.
+The app needs a LAN address for Safari and the Apple TV, which a VPN namespace would
+remove, so traffic is split by destination. Through the proxy: playlist, segments, header
+probe and headless browser. Direct: loopback, private ranges, link-local, `*.local` and
+`no_proxy`.
 
-Consequences worth knowing:
+Note:
 
-- **A stream that needs no fixing is still proxied.** Otherwise the app hands out the
-  origin's own URL, Safari or the Apple TV fetches it from your address, and one
-  correctly served stream undoes the hiding. That is `PWS_FORCE_PROXY`; `0` accepts the
-  leak.
-- **It is `PWS_EGRESS_PROXY`, not `https_proxy`.** The conventional variables are honoured
-  if already set, but setting them yourself points every library in the process at the
-  tunnel, health check included.
+- **Streams that need no fixing are still proxied.** Otherwise Safari or the Apple TV
+  would fetch the origin's URL from your address. This is `PWS_FORCE_PROXY`; `0` accepts
+  the leak.
+- **Use `PWS_EGRESS_PROXY`, not `https_proxy`.** The standard variables are honoured if
+  already set, but setting them sends everything in the process through the tunnel,
+  health check included.
 
-`GET /api/egress` reports where upstream fetches leave from and the address the exit
-answers with. It asks through the proxy and never directly, so a tunnel that is down
-reads as an error rather than leaking the address being hidden. Authenticated proxies
-work throughout: Chromium takes no credentials in `--proxy-server`, so the browser
-fallback gets them through Playwright.
+`GET /api/egress` reports the exit and the address it answers with. It asks only through
+the proxy, so a down tunnel shows an error without leaking your address. Authenticated
+proxies work; Chromium takes no credentials in `--proxy-server`, so the browser fallback
+passes them through Playwright.
 
 ## When the origin rejects Python's TLS handshake
 
-**This is for streams you can already play in your own browser.** It does nothing for
-DRM, and nothing for a stream the origin would refuse your browser too.
+**Only for streams your own browser can already play.** It does nothing for DRM, or for
+a stream the origin would refuse your browser too.
 
-Some origins never read the headers. Python's OpenSSL handshake (cipher list, extension
-order, ALPN set) matches no shipping browser, and a JA3/JA4 hash of it is refused before
-a header is looked at, so cycling header profiles changes nothing. `--probe` and
-`--discover` report that the origin is screening the client itself, and exit 2.
+Python's OpenSSL handshake (cipher list, extension order, ALPN set) matches no shipping
+browser. Some origins refuse its JA3/JA4 hash before reading any header, so header
+profiles don't help. `--probe` and `--discover` report that the origin is screening the
+client, and exit 2.
 
-With `curl_cffi` installed (it is in `requirements.txt`) the proxy retries presenting
-Safari's handshake, matching the `User-Agent` it already sends. If that works, every
-fetch for the stream uses it. Nothing is tried until Python's own handshake is refused.
-`--browser-handshake` starts a proxy that way from the first request, which is what the
-web app does once the resolver has learnt it is needed.
+With `curl_cffi` installed (it is in `requirements.txt`), after Python's handshake is
+refused the proxy retries with Safari's, matching its `User-Agent`. If that works, the
+stream keeps using it. `--browser-handshake` uses it from the first request; the web app
+passes it once the resolver finds it is needed.
 
 ## HTTP API
 
@@ -307,8 +285,8 @@ web app does once the resolver has learnt it is needed.
 | `deploy/` | systemd unit and installer, for hosts without docker |
 | `tests/` | The checks, including a fake origin that behaves like a hostile one |
 
-`hls_proxy.py` needs no dependencies. The web app's are in `requirements.txt`, the checks
-add pytest and ruff in `requirements-dev.txt`.
+`hls_proxy.py` has no dependencies. The web app's are in `requirements.txt`;
+`requirements-dev.txt` adds pytest and ruff.
 
 ## Running the tests
 
@@ -318,29 +296,24 @@ python3 hls_proxy.py --self-test     # or: python3 -m pytest -q
 ruff check .
 ```
 
-`tests/origin.py` is a fake origin with each awkward behaviour as a switch: a Referer
-gate, a gate on the client itself, `text/plain` segments, presigned URLs that expire,
-byte ranges, and a sliding window. Most tests run a real proxy as a subprocess and assert
-on the wire, since a stream that resolves cleanly and then 403s on every segment looks
-fine from inside the process.
+`tests/origin.py` is a fake origin with each awkward behaviour as a switch: Referer
+gate, client gate, `text/plain` segments, expiring presigned URLs, byte ranges, sliding
+window. Most tests run a real proxy as a subprocess and check the wire, because a stream
+that 403s on every segment can look fine from inside the process.
 
-CI runs the suite on Python 3.9 through 3.14, and ruff over everything. `CONTRIBUTING.md`
-has the rest: run the checks, keep `hls_proxy.py` on the standard library.
+CI runs the suite on Python 3.9 to 3.14, plus ruff. See `CONTRIBUTING.md`.
 
 ## Scope
 
-It corrects a `Content-Type` and re-serves a stream you can already play. It does not
-get around access controls -- logins, paywalls, geo-restrictions, DRM -- and changes
-that would are out of scope, as is anything that needs the app reachable from the public
-internet (see `SECURITY.md`).
+It corrects a `Content-Type` and re-serves a stream you can already play. Getting around
+access controls (logins, paywalls, geo-restrictions, DRM) is out of scope, as is anything
+needing the app reachable from the public internet (see `SECURITY.md`).
 
-DRM streams use Widevine or FairPlay, so the segments are encrypted and re-serving them
-achieves nothing. DASH has no native AirPlay path. Screen mirroring is the answer for
-both.
+DRM streams (Widevine, FairPlay) are encrypted, so re-serving them does nothing. DASH has
+no native AirPlay path. Use screen mirroring for both.
 
-Do not route this through QuickTime. On macOS 27.0, QuickTime 10.5 crashes with
-`EXC_BREAKPOINT` when AirPlay route discovery fires during playback-control layout. It is
-an AVKit bug. Use Safari.
+Don't use QuickTime. On macOS 27.0, QuickTime 10.5 crashes with `EXC_BREAKPOINT` when
+AirPlay route discovery fires during playback-control layout (an AVKit bug). Use Safari.
 
 ## Licence
 

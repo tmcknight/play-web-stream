@@ -1,5 +1,5 @@
-# Tooling config only. hls_proxy.py is deliberately not a package: it is a single file
-# that runs from anywhere with nothing installed, and the skill depends on that.
+# Tooling config only. hls_proxy.py is not a package: it is a single file that runs
+# anywhere with nothing installed, and the skill relies on that.
 
 [tool.ruff]
 line-length = 100

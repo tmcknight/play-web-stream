@@ -1,4 +1,4 @@
-"""The proxy on the wire, against an origin that behaves the way real ones do."""
+"""The proxy on the wire, against a fake origin that behaves like real ones."""
 
 import base64
 
@@ -8,7 +8,7 @@ GATE = "https://page.example/"
 
 
 def first_segment(proxy):
-    """Walk master -> variant -> segment, the way a player does."""
+    """Walk master, variant, segment, as a player does."""
     variant = proxy.routes("/live.m3u8", "pl")
     path = variant[-1] if variant else "/live.m3u8"
     return proxy.routes(path, "seg")[0]
@@ -17,7 +17,7 @@ def first_segment(proxy):
 # --------------------------------------------------------------------------- referer
 
 def test_a_referer_gated_stream_plays_all_the_way_down(start_proxy):
-    """The whole chain used to resolve, start, and then 403 on every segment."""
+    """This used to resolve and start, then 403 on every segment."""
     with FakeOrigin(referer=GATE) as origin:
         proxy = start_proxy(origin.url + "/master.m3u8", GATE)
         assert proxy.get("/live.m3u8")[0] == 200
@@ -41,7 +41,7 @@ def test_an_ungated_origin_is_not_sent_a_referer(start_proxy):
 # --------------------------------------------------------------------------- mime
 
 def test_the_declared_type_is_corrected_from_the_bytes(start_proxy):
-    """text/plain on an MPEG-TS segment is the crossed-out play icon."""
+    """text/plain on an MPEG-TS segment gives the crossed-out play icon."""
     with FakeOrigin(segment_type="text/plain") as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         _, headers, _ = proxy.get(first_segment(proxy))
@@ -58,8 +58,8 @@ def test_the_playlist_is_served_as_a_playlist(start_proxy):
 # --------------------------------------------------------------------------- vod
 
 def test_a_finished_programme_is_served_whole_and_with_its_end(start_proxy):
-    """Windowing a VOD playlist kept its tail, dropped its end, and an Apple TV
-    read it twice and never asked for a segment."""
+    """Windowing a VOD playlist dropped its ENDLIST, and an Apple TV read it twice and
+    never asked for a segment."""
     with FakeOrigin(master=MASTER_PLAIN, playlist_type="VOD", window=30) as origin:
         proxy = start_proxy(origin.url + "/video.m3u8")
         _, _, body = proxy.get("/live.m3u8")
@@ -73,11 +73,9 @@ def test_a_finished_programme_is_served_whole_and_with_its_end(start_proxy):
 # --------------------------------------------------------------------------- shims
 
 def test_media_buried_behind_an_image_header_is_dug_out(start_proxy):
-    """One origin serves its segments from an image CDN, which only accepts images.
-
-    Each is a 42-byte RIFF/WEBP header in front of an ordinary MPEG-TS segment. Safari
-    on iOS tolerates being handed the header; an Apple TV plays for a few seconds and
-    reports the item stopped, which is the whole bug.
+    """One origin serves segments from an image CDN, each behind a 42-byte RIFF/WEBP
+    header. Safari on iOS tolerates the header; an Apple TV plays a few seconds and
+    then reports the item stopped.
     """
     with FakeOrigin(segment_type="image/webp", shim=WEBP_SHIM) as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
@@ -90,7 +88,7 @@ def test_media_buried_behind_an_image_header_is_dug_out(start_proxy):
 
 
 def test_a_range_on_a_shimmed_segment_counts_from_the_media(start_proxy):
-    """The client is addressing the video, which knows nothing of the header."""
+    """Range offsets refer to the media, not the stripped header."""
     with FakeOrigin(segment_type="image/webp", shim=WEBP_SHIM) as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         status, headers, body = proxy.get(first_segment(proxy), {"Range": "bytes=0-187"})
@@ -101,7 +99,6 @@ def test_a_range_on_a_shimmed_segment_counts_from_the_media(start_proxy):
 
 
 def test_an_unshimmed_segment_is_left_exactly_as_it_was(start_proxy):
-    """The common case must not pay for the rare one, or lose a byte to it."""
     with FakeOrigin(segment_type="text/plain") as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         _, headers, body = proxy.get(first_segment(proxy))
@@ -161,7 +158,7 @@ def test_a_second_client_costs_nothing_upstream(start_proxy):
 
 
 def test_a_segment_survives_the_origin_dropping_it(start_proxy):
-    """The point of the widened window: the origin publishes three, we advertise more."""
+    """The widened window advertises segments the origin no longer publishes."""
     with FakeOrigin() as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         segment = first_segment(proxy)
@@ -172,7 +169,7 @@ def test_a_segment_survives_the_origin_dropping_it(start_proxy):
 
 
 def test_a_segment_refused_once_is_asked_for_again(start_proxy):
-    """One blip must not end the stream: an Apple TV does not forgive a 404."""
+    """An Apple TV stops on a 404, so one transient refusal gets a retry."""
     with FakeOrigin() as origin:
         proxy = start_proxy(origin.url + "/master.m3u8", None, "--cache-mb", 0)
         segment = first_segment(proxy)
@@ -186,7 +183,7 @@ def test_a_segment_refused_once_is_asked_for_again(start_proxy):
 
 
 def test_a_segment_refused_every_time_is_still_an_expiry(start_proxy):
-    """The retry buys one chance, it does not paper over a presign that is gone."""
+    """The retry is one attempt; an expired presign still reports as expired."""
     with FakeOrigin() as origin:
         proxy = start_proxy(origin.url + "/master.m3u8", None, "--cache-mb", 0)
         segment = first_segment(proxy)
@@ -217,7 +214,7 @@ def test_a_range_is_cut_from_the_cached_copy(start_proxy):
 # --------------------------------------------------------------------------- tokens
 
 def test_a_forged_segment_token_is_refused(start_proxy):
-    """What a token holder could otherwise point at anything on the network."""
+    """Otherwise a token holder could point /seg/ at anything on the network."""
     with FakeOrigin() as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         blob = base64.urlsafe_b64encode(b"http://127.0.0.1:8786/api/streams").decode()
@@ -243,7 +240,7 @@ def test_the_path_token_is_still_required(start_proxy):
 # --------------------------------------------------------------------------- flattening
 
 def test_a_master_with_separate_audio_is_served_whole(start_proxy):
-    """Pinning a variant would drop the audio rendition and play the stream silent."""
+    """Pinning a variant would drop the audio rendition and play silent."""
     with FakeOrigin() as origin:
         proxy = start_proxy(origin.url + "/master.m3u8")
         assert "TYPE=AUDIO" in proxy.text("/live.m3u8")

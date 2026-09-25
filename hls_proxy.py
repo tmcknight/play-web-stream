@@ -3,16 +3,16 @@
 
 Browser players built on hls.js feed bytes to Media Source Extensions, which ignores
 Content-Type and never exposes an AirPlay route. Safari and QuickTime play HLS through
-AVFoundation instead, which does expose AirPlay -- but AVFoundation refuses segments
-whose Content-Type is wrong, and stream CDNs routinely serve MPEG-TS as text/plain.
+AVFoundation instead, which does expose AirPlay, but it refuses segments whose
+Content-Type is wrong, and stream CDNs often serve MPEG-TS as text/plain.
 
-This proxy sits in between: it fetches the upstream playlist with whatever headers the
-origin demands, rewrites every URI to point back at itself, and streams each segment
-through with a Content-Type sniffed from the actual bytes.
+This proxy fetches the upstream playlist with whatever headers the origin needs,
+rewrites every URI to point back at itself, and streams each segment through with a
+Content-Type sniffed from the bytes.
 
-It binds all interfaces because AirPlay hands the media URL to the receiver, which then
-fetches it from this machine over the LAN. To keep that exposure bounded it serves under
-an unguessable path and shuts itself down once nothing has been watching for a while.
+It binds all interfaces because AirPlay hands the media URL to the receiver, which
+fetches it from this machine over the LAN. To limit that exposure it serves under an
+unguessable path and exits once nothing has fetched anything for a while.
 
     python3 hls_proxy.py --discover <page-url>
     python3 hls_proxy.py --source <playlist-url> [--referer <url>]
@@ -53,18 +53,17 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15")
 
 PLAYLIST_MIME = "application/vnd.apple.mpegurl"
-# A Host header is client-supplied, so it is matched rather than trusted: hostname or
-# IPv4, bracketed IPv6, optional port, nothing else.
+# The Host header is client-supplied, so only accept a hostname or IPv4, bracketed IPv6,
+# and an optional port.
 HOST_HEADER = re.compile(r'^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.\-]+)(?::\d{1,5})?$')
 URI_ATTR = re.compile(r'(URI=")([^"]+)(")')
 SNIFF_BYTES = 65536
 DEFAULT_PORT = 8787
 PORT_SEARCH_RANGE = 20
 
-# Every URI this proxy rewrites is signed with a key that lives and dies with the
-# process. Without that check /seg/ fetches whatever URL is handed to it, which makes
-# the path token a key to the whole LAN, and that token travels: it is in a URL people
-# paste, open on a television and hand to each other.
+# Every rewritten URI is signed with a per-process key. Without it /seg/ would fetch any
+# URL it was given, turning the path token into access to the whole LAN. The token is
+# not secret in practice: it sits in a URL people paste and share.
 _SIGN_KEY = secrets.token_bytes(32)
 
 opts = None
@@ -73,19 +72,17 @@ last_activity = time.time()
 
 # ----------------------------------------------------------------------------- egress
 
-# Where our own requests leave from. What is at stake is the address a stream origin
-# sees: with a proxy set, every fetch this process makes for somebody else's media goes
-# out through it, and the origin sees the exit node rather than this network.
+# With an egress proxy set, every upstream fetch goes through it, so stream origins see
+# the exit node's address instead of this network's.
 #
-# It is deliberately not the whole machine's traffic. This proxy also *serves* the LAN --
-# Safari asks it for segments, and an Apple TV fetches them off it directly -- and
-# routing that side through a tunnel would break AirPlay while hiding nothing. So the
-# split is by destination: upstream through the proxy, this network direct. The two
-# halves of that rule are `egress_bypass` here and BYPASS_LIST for chromium.
+# Only upstream traffic uses it. This process also serves the LAN (Safari and the Apple
+# TV fetch segments from it), and sending that through a tunnel would break AirPlay and
+# hide nothing. So the split is by destination: upstream via the proxy, this network
+# direct. `egress_bypass` implements that for urllib, BYPASS_LIST for chromium.
 PROXY_ENV = ("PWS_EGRESS_PROXY", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY")
 
-# Chromium's own bypass syntax, handed to it through playwright, saying what
-# `egress_bypass` says for urllib. Chromium keeps loopback direct without being told.
+# The same rule as `egress_bypass`, in Chromium's bypass syntax, passed via playwright.
+# Chromium already keeps loopback direct.
 BYPASS_LIST = ("localhost,*.local,*.lan,*.internal,*.home.arpa,127.0.0.0/8,10.0.0.0/8,"
                "172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,::1,fc00::/7,fe80::/10")
 
@@ -94,21 +91,19 @@ PRIVATE_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in
                           "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"))
 DIRECT_SUFFIX = (".local", ".lan", ".internal", ".home.arpa")
 
-# Asked through the proxy, and only through it -- see `egress_check`.
+# Only ever fetched through the proxy (see `egress_check`).
 PROBE_URL = "https://api.ipify.org"
 
 
 def egress_proxy():
     """The proxy upstream fetches go through, or "" when there is none.
 
-    PWS_EGRESS_PROXY names it; the conventional variables are honoured after it, so a
-    host that already exports `https_proxy` needs nothing new. Naming it the first way
-    is the better one here: the second sends every other library in the process out the
-    same door, the container's own health check included, and that door is a tunnel
-    that cannot route back to 127.0.0.1.
+    PWS_EGRESS_PROXY first, then the conventional variables, so a host that already
+    exports `https_proxy` works unchanged. PWS_EGRESS_PROXY is preferred because
+    `https_proxy` also redirects every other library in the process, including the
+    container's health check, and the tunnel cannot route back to 127.0.0.1.
 
-    A bare host:port is read as http://host:port, which is what a proxy that omits the
-    scheme means by it.
+    A bare host:port is read as http://host:port.
     """
     for name in PROXY_ENV:
         value = os.environ.get(name, "").strip()
@@ -118,7 +113,7 @@ def egress_proxy():
 
 
 def egress_label(proxy=None):
-    """The proxy as it is safe to print: no credentials, just where it is."""
+    """The proxy address without credentials, safe to print."""
     proxy = egress_proxy() if proxy is None else proxy
     if not proxy:
         return ""
@@ -141,14 +136,12 @@ def _no_proxy_hosts():
 def egress_bypass(host):
     """Whether `host` is fetched directly rather than through the egress proxy.
 
-    Everything on this network is. The proxy is here to keep our address from stream
-    origins, and the LAN already has it; sending loopback through it would mean a health
-    check leaving the house to come back, and sending the LAN through it would mean
-    handing an exit node an address it cannot route at all.
+    Everything on this network is. The proxy hides our address from stream origins, and
+    the LAN already knows it. An exit node also cannot route to loopback or LAN
+    addresses.
 
-    The test is on the literal host, so a *name* that resolves to a LAN address is not
-    caught. Upstream media is named and addressed publicly, so what that misses is a
-    fetch nothing here makes.
+    Only the literal host is tested, so a name that resolves to a LAN address is missed.
+    Upstream media always has public names, so nothing here makes such a fetch.
     """
     host = (host or "").strip().lower()
     if host.startswith("["):                  # bracketed IPv6, with or without a port
@@ -170,7 +163,7 @@ def egress_bypass(host):
 
 
 class EgressProxyHandler(urllib.request.ProxyHandler):
-    """A ProxyHandler holding to our idea of what stays on this network."""
+    """A ProxyHandler that sends `egress_bypass` hosts direct."""
 
     def proxy_open(self, req, proxy, type):
         if egress_bypass(req.host or ""):
@@ -183,12 +176,11 @@ _opener_lock = threading.Lock()
 
 
 def egress_opener():
-    """An opener pinned to the egress proxy -- or to no proxy, when none is set.
+    """An opener pinned to the egress proxy, or to no proxy when none is set.
 
-    urlopen's own opener reads the environment itself and applies `no_proxy` by rules
-    that predate CIDR and know nothing about a LAN. Pinning it here means one answer for
-    every fetch in this process, and the same answer in the proxy the web app spawns,
-    which inherits the environment and arrives at it again.
+    urlopen's default opener applies `no_proxy` without CIDR support or any notion of a
+    LAN. Using this everywhere gives every fetch the same routing, including in proxies
+    the web app spawns, which inherit the environment.
     """
     proxy = egress_proxy()
     with _opener_lock:
@@ -201,12 +193,10 @@ def egress_opener():
 
 
 def egress_playwright():
-    """The egress proxy as playwright's launch(proxy=...) wants it, or None.
+    """The egress proxy in the form playwright's launch(proxy=...) takes, or None.
 
-    Chromium takes no credentials in --proxy-server; playwright answers the 407 with
-    them instead, which is why the browser fallback is given this rather than an
-    argument. Without it that fallback is the one fetch in the pipeline that would
-    still leave from this network's own address.
+    Chromium does not accept credentials in --proxy-server, so playwright has to answer
+    the 407. Without this the browser fallback would fetch from this network's address.
     """
     proxy = egress_proxy()
     if not proxy:
@@ -223,11 +213,9 @@ def egress_playwright():
 def force_proxy():
     """Whether a stream is served through this proxy even when it would play direct.
 
-    With an egress proxy set this defaults on, and it is the point of the exercise. When
-    the resolver finds a stream that needs no rewriting, the app hands the origin URL
-    straight to the player -- and the player, or the Apple TV the URL was passed to,
-    then fetches the origin itself from this network's address. One stream that needed
-    no fixing undoes the hiding. PWS_FORCE_PROXY=0 says to accept that.
+    Defaults on when an egress proxy is set. Otherwise a stream that needs no rewriting
+    is handed to the player (or Apple TV) as the origin URL, and it fetches the origin
+    from this network's address. PWS_FORCE_PROXY=0 turns this off.
     """
     raw = os.environ.get("PWS_FORCE_PROXY", "").strip().lower()
     if raw in ("1", "true", "yes", "on"):
@@ -240,10 +228,8 @@ def force_proxy():
 def egress_check(timeout=8):
     """Report the address upstream origins see us as, by asking through the proxy.
 
-    Through it and only through it. Asking directly as well would hand this network's
-    address to the very service being asked to describe it -- the one thing the proxy
-    exists to prevent -- so a tunnel that is down reads here as an error rather than as
-    a second answer.
+    Never falls back to a direct request, which would leak this network's address to
+    the probe service. A tunnel that is down is reported as an error.
     """
     proxy = egress_proxy()
     report = {"enabled": bool(proxy), "proxy": egress_label(proxy),
@@ -262,8 +248,8 @@ def egress_check(timeout=8):
 # --------------------------------------------------------------------------- fetching
 
 def request_headers(referer=None, extra=None):
-    """What every upstream request carries: a browser's UA and, when the origin demanded
-    one, the Referer and the Origin that goes with it."""
+    """Headers for every upstream request: a browser UA, plus Referer and Origin when
+    the origin needs them."""
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
@@ -277,7 +263,7 @@ def build_request(url, referer=None, extra=None):
 
 
 def _urlopen(url, referer, timeout, extra=None):
-    """One GET, presenting whichever client this process currently is."""
+    """One GET, with the current handshake (see `handshake()`)."""
     if handshake() == "browser":
         return _browser_open(url, request_headers(referer, extra), timeout)
     return egress_opener().open(build_request(url, referer, extra), timeout=timeout)
@@ -293,28 +279,27 @@ def _open_once(url, referer, timeout, extra):
     except urllib.error.HTTPError as exc:
         if not referer or exc.code not in (401, 403):
             raise
-        exc.close()     # an HTTPError holds the body; the retry's is the one we keep
-        # A few origins gate the playlist on a Referer and refuse one on the media.
+        exc.close()     # an HTTPError holds an open body
+        # A few origins need a Referer on the playlist and refuse one on the media.
         return _urlopen(url, None, timeout, extra)
 
 
 def open_media(url, referer=None, timeout=25, extra=None, retries=0):
     """Open a URL with the Referer the origin demanded, retrying once without it.
 
-    A Referer is only ever supplied because the resolver proved the origin wanted one,
-    so it belongs on every request -- segments as much as playlists. Fetching segments
-    bare meant a Referer-gated stream resolved cleanly, started a proxy, and then 403ed
-    on every segment, which the caller read as an expired presign.
+    A Referer is only set when the resolver found the origin needs one, so it goes on
+    segments too. Without it a Referer-gated stream resolved, then 403ed on every
+    segment, which looked like an expired presign.
 
-    A transient failure -- a 5xx, a reset, a timeout -- is retried `retries` times.
-    Only the playlist poll asks for that: a playlist that fails to refresh ends the
-    stream, while a segment retried is a segment arriving after the buffer wanted it.
+    Transient failures (5xx, reset, timeout) are retried `retries` times. Only the
+    playlist poll uses this: a failed refresh ends the stream, while a retried segment
+    usually arrives too late to help.
     """
     for attempt in range(retries):
         try:
             return _open_once(url, referer, timeout, extra)
         except urllib.error.HTTPError as exc:
-            if exc.code < 500:          # a refusal is an answer; only a fault is retried
+            if exc.code < 500:          # only server errors are retried
                 raise
             exc.close()
         except OSError:                 # URLError and socket timeouts both land here
@@ -334,32 +319,29 @@ def fetch(url, referer=None, timeout=25, retries=1):
 
 
 def fetch_head(url, referer=None, timeout=25, limit=SNIFF_BYTES):
-    """Read only the opening bytes -- enough to name a container, not a download."""
+    """Read only the opening bytes, enough to identify the container."""
     with open_media(url, referer, timeout) as resp:
         return resp.read(limit), resp.headers.get("Content-Type", "")
 
 
 # --------------------------------------------------------------------------- handshake
 
-# Some origins never read the headers. A JA3/JA4 hash of the TLS ClientHello says the
-# client is Python's OpenSSL rather than any browser -- the cipher list, the extension
-# order, the ALPN set -- and they refuse on that alone, which is why no header profile
-# changes their answer. curl_cffi presents a real browser's handshake. It is optional:
-# the proxy is the piece that runs anywhere with nothing installed, so without it every
-# path behaves as it always has and a gated origin is reported as the dead end it is.
+# Some origins refuse based on a JA3/JA4 hash of the TLS ClientHello (cipher list,
+# extension order, ALPN), which identifies Python's OpenSSL. No header change helps.
+# curl_cffi presents a real browser's handshake. It is optional because this file must
+# run with the standard library alone; without it, a gated origin is reported as such.
 try:
     from curl_cffi import requests as _curl
 except ImportError:                                               # optional dependency
     _curl = None
 
-# The handshake and the User-Agent have to name the same browser: Safari's UA over a
-# Chrome ClientHello is a tell of its own. This is the Safari behind UA above, and the
-# User-Agent curl_cffi sends for it is that string byte for byte, so the headers it
-# adds are left alone rather than overridden.
+# The handshake must match the User-Agent: Safari's UA over a Chrome ClientHello is
+# itself detectable. This matches UA above, and curl_cffi sends that exact UA string,
+# so its headers are not overridden.
 IMPERSONATE = "safari18_0"
 
-_handshake = "python"                 # the process default, or "browser" once told
-_scoped = threading.local()           # a per-thread override, while a resolve is in flight
+_handshake = "python"                 # process default: "python" or "browser"
+_scoped = threading.local()           # per-thread override during a resolve
 _browser = None
 _browser_for = None                   # the egress proxy the session was built with
 _browser_lock = threading.Lock()
@@ -378,11 +360,10 @@ def handshake():
 def use_browser_handshake(on=True):
     """Switch fetches to a browser's handshake, or back to Python's.
 
-    Process-wide, unless a `handshake_scope()` is open on this thread -- then it lands
-    there and nowhere else. A proxy serves one source, so process-wide is right for it:
-    an origin that screens the handshake screens it on every segment, not just the
-    playlist. The web app resolves several sources at once, and is the reason the
-    scope exists.
+    Process-wide, unless a `handshake_scope()` is open on this thread, in which case
+    only that scope changes. A proxy serves one source, and an origin that screens the
+    handshake does so on every segment, so process-wide suits it. The scope exists for
+    the web app, which resolves several sources at once.
     """
     global _handshake
     if on and not handshake_available():
@@ -398,17 +379,14 @@ def use_browser_handshake(on=True):
 def handshake_scope(presenting=None):
     """Confine handshake switches to this thread for the duration of the block.
 
-    Without it, two resolves running at once in the same process share one switch: the
-    browser handshake one origin demanded follows every fetch the other makes, and
-    whichever finishes first puts the switch back while the other is still using it.
-    The symptom is an intermittent "origin refuses this client" on a stream that
-    resolves cleanly when nothing else is running -- so it costs a proxy that was
-    about to be started with the wrong handshake, or none at all.
+    Without it, concurrent resolves share one switch: one origin's browser handshake
+    leaks into the other's fetches, and whichever finishes first resets it while the
+    other is still running. The symptom was an intermittent "origin refuses this client"
+    on a stream that resolves fine alone, and a proxy started with the wrong handshake.
 
-    Nested scopes restore the value they found, so a caller inside another caller's
-    block cannot strand it. `presenting` carries a scope into a thread this one hands
-    work to, which is not something a per-thread value does by itself -- see the pool
-    in `discover()`.
+    Nested scopes restore the value they found. `presenting` carries the value into a
+    worker thread, which a thread-local cannot do by itself (see the pool in
+    `discover()`).
     """
     outer = getattr(_scoped, "handshake", None)
     _scoped.handshake = presenting or _handshake
@@ -419,12 +397,11 @@ def handshake_scope(presenting=None):
 
 
 def _browser_session():
-    """The curl_cffi session, built once -- and again if the egress proxy has changed.
+    """The curl_cffi session, rebuilt if the egress proxy has changed.
 
-    The proxy is set on the session rather than per request because this session only
-    ever fetches upstream media; the LAN is served by the handler, never fetched. It is
-    stated explicitly rather than left to libcurl's own reading of the environment, so
-    that both clients in this process agree on where they leave from.
+    The proxy is set per session because this session only fetches upstream media. It
+    is set explicitly, not left to libcurl's reading of the environment, so both clients
+    in this process route the same way.
     """
     global _browser, _browser_for
     proxy = egress_proxy()
@@ -439,13 +416,10 @@ def _browser_session():
 
 
 class BrowserResponse:
-    """A streamed curl_cffi response behind the interface urlopen's response has.
+    """A streamed curl_cffi response with urlopen's .status, .headers and .read(n).
 
-    Everything downstream -- fetch, the sniff, the segment relay -- reads .status,
-    .headers and .read(n) off whatever open_media hands back, so this answers the same
-    way. One difference is hidden here: libcurl undoes any Content-Encoding as the body
-    arrives, which leaves the origin's Content-Length describing bytes we no longer
-    have. It is dropped, and the relay streams to close instead of promising a length.
+    libcurl decodes any Content-Encoding as the body arrives, so the origin's
+    Content-Length no longer matches. It is dropped, and the relay streams until close.
     """
 
     def __init__(self, resp):
@@ -492,8 +466,8 @@ class BrowserResponse:
 def _browser_open(url, headers, timeout):
     """GET `url` as a browser, raising what urlopen would raise.
 
-    curl_cffi's own headers stay, since they are the ones its handshake goes with; only
-    what the origin asked of us -- Referer, Origin, Range -- is added on top.
+    curl_cffi's own headers match its handshake, so they are kept. Only Referer, Origin
+    and Range are added.
     """
     headers = {name: value for name, value in headers.items() if name.lower() != "user-agent"}
     try:
@@ -509,12 +483,12 @@ def _browser_open(url, headers, timeout):
 
 
 def scrub(text, limit=200):
-    """A client-supplied string, made safe to write as one line of the log."""
+    """Make a client-supplied string safe to log as one line."""
     return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:limit]
 
 
 def sniff_mime(data, fallback="application/octet-stream"):
-    """Decide a Content-Type from the bytes, since the origin's own header is unreliable."""
+    """Pick a Content-Type from the bytes, since the origin's header is unreliable."""
     if not data:
         return fallback
     if data[:1] == b"#" and b"#EXTM3U" in data[:64]:
@@ -533,25 +507,21 @@ def sniff_mime(data, fallback="application/octet-stream"):
     return fallback
 
 
-# How far into a segment to look for media hiding behind something else. Generous:
-# the shim seen in the wild is 42 bytes, and reading further costs one pass over
-# bytes already in hand.
+# How far into a segment to look for media behind a prefix. The one seen in the wild is
+# 42 bytes; scanning further is cheap since the bytes are already in memory.
 SHIM_MAX = 4096
-SHIM_PACKETS = 20       # sync bytes that must line up before this is believed
+SHIM_PACKETS = 20       # sync bytes that must line up to count as a match
 
 
 def media_offset(data):
-    """Where the real media starts, when something is glued in front of it.
+    """Where the media starts, when a prefix has been prepended to it.
 
-    One origin serves its segments from an image CDN, which only accepts images: each
-    one is a 42-byte RIFF/WEBP header followed by an ordinary MPEG-TS segment, whole
-    packets all the way to the end. The bytes play perfectly once the header is gone,
-    and a decoder handed the header sees a broken container instead -- Safari on iOS
-    tolerates it, an Apple TV plays for a few seconds and reports the item stopped.
+    One origin serves segments from an image CDN that only accepts images: each is a
+    42-byte RIFF/WEBP header followed by an ordinary MPEG-TS segment. Safari on iOS
+    tolerates the header; an Apple TV plays a few seconds and then stops the item.
 
-    Zero for everything that begins with its own container, which is every ordinary
-    stream and costs one comparison. Twenty sync bytes at their exact spacing is the
-    evidence required, so a file that merely contains a 0x47 is not mistaken for this.
+    Returns zero for anything starting with its own container (every ordinary stream).
+    It needs twenty sync bytes at exact 188-byte spacing, so a stray 0x47 does not match.
     """
     if not data or data[0] == 0x47:
         return 0
@@ -578,14 +548,12 @@ PLAYLIST_TYPE = re.compile(r'^#EXT-X-PLAYLIST-TYPE:\s*(VOD|EVENT)\s*$', re.M)
 def keeps_everything(text):
     """Whether a media playlist promises never to drop a segment.
 
-    VOD says the playlist will not change at all, and EVENT that it only grows. Either
-    way there is no edge to fall off, so accumulate() has nothing to add -- and what it
-    does do is wrong for them: it keeps the last few segments of the whole programme
-    and strips #EXT-X-ENDLIST, which leaves a playlist declaring itself VOD with no end
-    and no beginning. An Apple TV handed Apple's own bipbop example like that read the
-    playlist twice and never asked for a segment. Only the declared type counts: an
-    #EXT-X-ENDLIST on a playlist that declares none is the live case, and its handling
-    stays as it was.
+    VOD playlists never change and EVENT playlists only grow, so there is no edge to
+    fall off. accumulate() would break them: it keeps only the last few segments and
+    strips #EXT-X-ENDLIST, leaving a VOD playlist with no start or end. An Apple TV
+    given Apple's bipbop example like that read the playlist twice and never fetched a
+    segment. Only the declared type counts; #EXT-X-ENDLIST without one is treated as
+    live.
     """
     return PLAYLIST_TYPE.search(text) is not None
 
@@ -635,9 +603,8 @@ def encode_url(url, route, self_prefix):
 def decode_url(token, route):
     """Recover the URL from a token this proxy signed, or refuse it.
 
-    The route is signed along with the URL, so a segment token cannot be replayed
-    against /pl/, which would hand back a rewritten copy of something that is not a
-    playlist. The base64 alphabet is url-safe and so never contains the separator.
+    The route is signed with the URL, so a segment token cannot be replayed against
+    /pl/. The url-safe base64 alphabet never contains the "." separator.
     """
     blob, dot, mac = token.partition(".")
     if not dot:
@@ -654,16 +621,15 @@ def decode_url(token, route):
 
 # --------------------------------------------------------------------------- window
 
-# Tags that belong to the segment that follows them, rather than to the playlist.
+# Tags that belong to the following segment, not the playlist.
 SEGMENT_TAGS = ("#EXTINF", "#EXT-X-BYTERANGE", "#EXT-X-DISCONTINUITY",
                 "#EXT-X-KEY", "#EXT-X-MAP", "#EXT-X-PROGRAM-DATE-TIME")
 
 _window_lock = threading.Lock()
-# One window per playlist URL. A master routes its variants and its #EXT-X-MEDIA
-# renditions through /pl/, so several media playlists are in flight at once; a single
-# shared window keyed by media sequence merged them into each other, putting audio
-# segments in the video playlist. Capped, because a re-resolved source arrives under a
-# freshly signed URL and the old window is then dead weight.
+# One window per playlist URL. A master's variants and #EXT-X-MEDIA renditions all go
+# through /pl/ at once; a single shared window merged them and put audio segments in the
+# video playlist. Capped, because a re-resolved source gets a new URL and the old window
+# is never used again.
 _windows = collections.OrderedDict()    # playlist url -> {sequence: (tags, uri)}
 _window_headers = {}                    # playlist url -> header tags
 _window_epochs = {}                     # playlist url -> {"offset", "high", "clock"}
@@ -686,7 +652,7 @@ def segment_seconds(tags, fallback=4.0):
 
 
 def stamp(when):
-    """One #EXT-X-PROGRAM-DATE-TIME, in the form the spec asks for."""
+    """One #EXT-X-PROGRAM-DATE-TIME tag in the spec's format."""
     text = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(when))
     return "%s:%s.%03dZ" % (DATE_TAG, text, int((when % 1) * 1000))
 
@@ -720,17 +686,15 @@ def parse_media_playlist(text, base_url):
 
 
 def is_restart(segments, window, epoch):
-    """Whether this poll is a new stream rather than the next few seconds of this one.
+    """Whether this poll is a restarted stream.
 
-    These origins restart: the media sequence drops from 497 back to 64 and the
-    encoder begins again. Numbering the window by the origin's sequence then put the
-    fresh segments *below* the ones already held, so the trim below deleted them on
-    arrival, the newest segment stayed a dead pre-restart one, and the playlist never
-    advanced again -- the stall that ends the stream for good.
+    These origins restart: the media sequence drops from, say, 497 to 64. Numbering by
+    the origin's sequence put the new segments below the held ones, so the trim deleted
+    them on arrival and the playlist never advanced again.
 
-    A restart is the whole poll sitting behind everything we hold. An origin briefly
-    serving an older copy of its playlist looks the same by sequence alone, so it has
-    to bring segments we do not already have before it counts as one.
+    A restart is a poll that sits entirely behind what we hold. An origin briefly
+    serving a stale playlist looks the same by sequence, so the poll must also bring
+    segments we do not have.
     """
     if not segments or epoch["high"] is None:
         return False
@@ -748,24 +712,19 @@ def is_gap(segments, epoch):
 
 
 def accumulate(text, base_url):
-    """Build a longer playlist than the origin publishes, by remembering past segments.
+    """Build a longer playlist than the origin publishes by remembering past segments.
 
-    These streams often expose only three segments -- about fifteen seconds. A player
-    that buffers ten seconds sits right at the edge of that window, and the moment it
-    slips past it is waiting on a segment that no longer exists, which stalls it for
-    good. Re-advertising recent segments gives it room to fall behind and recover.
+    These streams often list only three segments (about fifteen seconds). A player
+    buffering ten seconds sits at the edge, and once it slips past it waits on a segment
+    that no longer exists and stalls for good. A wider window lets it recover.
 
-    The window is numbered by the origin's sequence plus an offset, so the numbering
-    we publish only ever climbs. The offset is what absorbs a restart: see
-    is_restart(). AVFoundation reads a media sequence that goes backwards as a
-    different stream, which is the other half of why a restart used to be fatal.
+    The window is numbered by the origin's sequence plus an offset, so the published
+    sequence only climbs, even across a restart (see is_restart()). AVFoundation treats
+    a sequence that goes backwards as a different stream.
 
-    Every segment is stamped with a wall-clock time unless the origin already gave it
-    one. These origins publish none, and a live playlist carrying no dates leaves a
-    player with nothing to place the stream on a timeline with -- while the AirPlay
-    hand-off tells the receiver, as the reference it was ported from does, that it is
-    interested in date ranges. The streams that hand-off is known to work against all
-    carry dates. Ours did not.
+    Each segment gets a wall-clock date unless the origin supplied one. These origins
+    supply none, and the AirPlay hand-off tells the receiver it wants date ranges. The
+    streams that hand-off is known to work with all carry dates.
     """
     header, segments = parse_media_playlist(text, base_url)
 
@@ -784,35 +743,30 @@ def accumulate(text, base_url):
         if header:
             _window_headers[base_url] = header
 
-        # A restart is spliced onto the end of the window rather than replacing it, so
-        # a player part-way through still has the segments it is working on. The join
-        # carries a discontinuity, which is how the decoder is told to expect a new
-        # timeline and new codec parameters at that point.
+        # A restart is appended to the window so a player part-way through keeps its
+        # segments. The join gets a discontinuity tag so the decoder expects a new
+        # timeline and codec parameters.
         opening = []
         if is_restart(segments, window, epoch):
             epoch["offset"] = epoch["high"] + 1 - segments[0][0]
             opening = ["#EXT-X-DISCONTINUITY"]
-            epoch["clock"] = None       # the new epoch begins at the wall clock, not
-                                        #   wherever the old one had run to
+            epoch["clock"] = None       # restart the dates from the wall clock
         elif is_gap(segments, epoch):
-            # Nobody asked for the playlist for longer than the origin keeps a
-            # segment, so what we hold and what it publishes no longer touch. Splicing
-            # them anyway made a playlist that numbered nine-minute-old segments and
-            # fresh ones consecutively, with nothing to say the timeline jumps between
-            # them; an Apple TV that started inside the old part hit the jump and
-            # ended the item. The old part is dropped instead. The sequence still only
-            # climbs, and a player coming back after a pause re-syncs to the live edge,
-            # which is what it would have done against the origin itself.
+            # Nobody polled for longer than the origin keeps a segment, so the held
+            # window and the new poll no longer overlap. Joining them numbered
+            # nine-minute-old and fresh segments consecutively with no discontinuity,
+            # and an Apple TV that hit the jump ended the item. So the old part is
+            # dropped. The sequence still climbs, and a returning player re-syncs to
+            # the live edge as it would against the origin.
             window.clear()
             epoch["clock"] = None
 
         fresh = [(seq, tags, url) for seq, tags, url in segments
                  if seq + epoch["offset"] not in window]
         if epoch["clock"] is None and fresh:
-            # Anchor so the newest of this batch starts one duration ago, which is when
-            # the origin will have published it. Everything after continues from there,
-            # so a segment keeps the date it was first given however often it is
-            # re-advertised -- a date that moved between reloads would be worse than none.
+            # Anchor so the newest segment in this batch started one duration ago, when
+            # the origin published it. Later dates continue from there, so a segment
+            # keeps its date across reloads. A date that moved would be worse than none.
             epoch["clock"] = time.time() - sum(segment_seconds(t) for _, t, _ in fresh)
 
         for seq, tags, url in fresh:
@@ -847,10 +801,9 @@ def reset_windows():
 
 # --------------------------------------------------------------------------- cache
 
-# Segments are kept as they pass through. accumulate() re-advertises ones the origin
-# has already dropped, and without a copy here the player asks for one and gets a 404 --
-# the stall the widened window exists to prevent. It also means Safari and the Apple TV,
-# which fetch the same stream independently, cost one trip upstream between them.
+# Segments are cached as they pass through. accumulate() re-advertises segments the
+# origin has dropped, and without a copy those would 404. It also lets Safari and the
+# Apple TV share one upstream fetch per segment.
 
 _cache_lock = threading.Lock()
 _cache = collections.OrderedDict()      # segment url -> (content-type, bytes)
@@ -858,13 +811,11 @@ _cache_bytes = 0
 _cache_limit = 0
 SEGMENT_MAX = 24 * 1024 * 1024          # one segment; a larger one streams uncached
 
-# A segment that comes back 403 or 404 is usually a presign that has expired, and the
-# answer to that is to re-resolve. Not always, though: a CDN under load refuses a
-# request it would serve a moment later with the very same codes, and the segment that
-# ended a stream here fetched cleanly thirty times in a row once the burst was over.
-# Passing that refusal on ends the stream -- an Apple TV does not forgive a 404 on a
-# segment -- so one refusal is retried before it is believed. A presign that really has
-# expired costs one extra request to establish that, once.
+# A 403 or 404 on a segment usually means an expired presign, fixed by re-resolving.
+# But a CDN under load returns the same codes for requests it serves a moment later
+# (one such segment then fetched cleanly thirty times in a row). An Apple TV ends the
+# stream on a segment 404, so one refusal is retried first. A truly expired presign
+# costs one extra request.
 SEGMENT_REFUSALS = 1
 
 
@@ -890,7 +841,7 @@ def cache_get(url):
 
 
 def cache_put(url, ctype, data):
-    """Keep a segment, dropping the least recently served to stay inside the budget."""
+    """Cache a segment, evicting the least recently served to stay within budget."""
     global _cache_bytes
     if not _cache_limit or len(data) > min(SEGMENT_MAX, _cache_limit):
         return
@@ -915,8 +866,8 @@ BYTE_RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
 def parse_range(header, size):
     """Resolve one byte range against a known size, or None for the whole thing.
 
-    Only a single range is honoured. Multipart ranges are legal HTTP and no HLS player
-    asks for them, so the whole body is a correct answer rather than a wrong one.
+    Only a single range is honoured. No HLS player asks for multipart ranges, and
+    returning the whole body is valid HTTP.
     """
     match = BYTE_RANGE.match((header or "").strip())
     if not match or size <= 0:
@@ -942,15 +893,15 @@ AUDIO_RENDITION = re.compile(r'#EXT-X-MEDIA:[^\n]*TYPE=AUDIO', re.I)
 def should_flatten(text):
     """Whether pinning one variant of this master loses nothing.
 
-    It does lose something when the audio is declared as a separate rendition: the
-    variant carries video only, and the #EXT-X-MEDIA line naming its audio lives in the
-    master we would be dropping. The stream then plays perfectly, and silently.
+    Not when audio is a separate rendition: the variant is video only, and the
+    #EXT-X-MEDIA line for its audio is in the master. Flattening then plays with no
+    sound.
     """
     return is_master(text) and not AUDIO_RENDITION.search(text)
 
 
 def current_source():
-    """The resolved source, read under the lock resolve_source() writes it with."""
+    """The resolved source, read under resolve_source()'s lock."""
     with _lock:
         return _resolved
 
@@ -965,9 +916,8 @@ def resolve_source(force=False):
     with _lock:
         if _resolved and not force:
             return _resolved
-        # The first resolution is where a client gate shows itself, and where trying
-        # once more as a browser belongs. A re-resolve mid-stream is answering an
-        # expired URL, and gets the plain fetch and the plain error it always has.
+        # A client gate shows up on the first resolve, so only that one retries as a
+        # browser. A mid-stream re-resolve is handling an expired URL and uses fetch().
         fetcher = fetch if _resolved else fetch_through_gate
         body, _ = fetcher(opts.source, referer=opts.referer)
         text = body.decode("utf-8", "replace")
@@ -984,16 +934,13 @@ def resolve_source(force=False):
 # --------------------------------------------------------------------------- serving
 
 def say(text):
-    """One log line, stamped. Without the time there is no telling whether a receiver
-    went quiet before the playlist stopped advancing or because of it, and that is the
-    question every stall reported against this proxy has come down to."""
+    """Write one timestamped log line. The time shows whether a receiver went quiet
+    before or after the playlist stopped advancing, which is how stalls get diagnosed."""
     sys.stderr.write("%s %s\n" % (time.strftime("%H:%M:%S"), text))
 
 
-# Safari refuses to autoplay video with audio, so an unmuted play() is tried first and
-# a muted one is the fallback -- muted autoplay is always permitted. Either way the
-# stream is already running by the time the page is looked at; the overlay only exists
-# to turn sound back on, which does need a gesture.
+# Safari may refuse to autoplay with sound, so unmuted play() is tried first, then
+# muted, which is always allowed. The overlay is for unmuting, which needs a gesture.
 PAGE = """<!doctype html>
 <html>
 <head>
@@ -1013,9 +960,8 @@ PAGE = """<!doctype html>
     backdrop-filter: blur(8px);
     display: inline-flex; align-items: center; gap: 8px;
   }
-  /* The same Heroicons outline set the app's own page uses, so the one screen a person
-     reaches over AirPlay is not the one drawn in a different hand. Two glyphs is not
-     worth a sprite here. */
+  /* The same Heroicons outline set as the app's page, so both screens match. Two glyphs
+     don't need a sprite. */
   #overlay svg { width: 18px; height: 18px; }
 </style>
 </head>
@@ -1061,8 +1007,8 @@ PAGE = """<!doctype html>
   });
 
   // Report playback state back to the proxy log. Safari blocks JavaScript from Apple
-  // Events by default, so this is the only way to see what the element is actually doing.
-  // True while the Apple TV, not this element, is the thing actually playing.
+  // Events by default, so this is the only way to see what the element is doing.
+  // True while the Apple TV is playing the stream instead of this element.
   // Everything the element reports about itself is about a pipeline it no longer
   // drives, so the watchdog below has to stand down for the duration.
   function wireless() {
@@ -1096,7 +1042,7 @@ PAGE = """<!doctype html>
   setInterval(() => report('tick'), 5000);
 
   // AVFoundation does not recover on its own from falling off the back of a live
-  // window: currentTime simply freezes while the element still claims to be playing.
+  // window: currentTime freezes while the element still claims to be playing.
   // Watch for that and jump to the live edge, reloading only if that fails too.
   //
   // Never while the stream is on an AirPlay receiver. There the element stops
@@ -1166,8 +1112,8 @@ class Handler(BaseHTTPRequestHandler):
     head_only = False
 
     def handle_one_request(self):
-        # Players hold several connections open and drop the idle ones. That surfaces
-        # here as a reset while waiting on the next request line, and is not an error.
+        # Players drop idle keep-alive connections, which shows up here as a reset
+        # while waiting for the next request. Not an error.
         try:
             super().handle_one_request()
         except (ConnectionResetError, BrokenPipeError, TimeoutError):
@@ -1177,7 +1123,7 @@ class Handler(BaseHTTPRequestHandler):
         line = fmt % args
         if "/favicon.ico" in line:
             return
-        # Tokens are long and drown the log; show only the route and status.
+        # Tokens are long; log only the route and status.
         line = line.replace("/" + opts.token, "")
         line = re.sub(r"/(seg|pl)/[A-Za-z0-9_=.-]+", r"/\1/...", line)
         say("%s %s" % (self.address_string(), line))
@@ -1194,17 +1140,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _prefix(self):
-        """Build this proxy's own base URL from the address the client used to reach it.
+        """Build the base URL from the Host the client used.
 
-        Pinning the prefix at startup meant one proxy could only ever be reached at one
-        address: change networks, or come in over Tailscale instead of the LAN, and every
-        rewritten segment URL still pointed at the old one. Deriving it per request means
-        the playlist a client gets back always refers to the host that client asked, which
-        is what the Apple TV needs when Safari hands the URL over.
+        A prefix fixed at startup broke when the address changed (a new network, or
+        Tailscale instead of the LAN). Per request, rewritten URLs always use the host
+        the client asked for, which the Apple TV needs when Safari hands the URL over.
         """
         host = self.headers.get("Host", "")
         if not HOST_HEADER.match(host):
-            return opts.prefix          # missing or malformed; fall back to the pinned one
+            return opts.prefix          # missing or malformed Host
         return "http://%s/%s" % (host, opts.token)
 
     def _serve_playlist(self, url, referer):
@@ -1223,13 +1167,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(text.encode(), PLAYLIST_MIME, cache=False)
 
     def _segment_type(self, url, head, resp):
-        """Name the container, remembering it for the byte ranges that follow.
+        """Identify the container, remembering it for later byte ranges.
 
-        An #EXT-X-BYTERANGE stream addresses one file at many offsets, and the bytes
-        at offset zero are the ones carrying a header to sniff. The type worked out
-        from that request stands in for the rest, since it is the same file throughout.
-        Failing that the sniff is still worth trying -- ranges tend to land on a TS
-        packet or an fMP4 box boundary -- and only the answer from offset zero is kept.
+        An #EXT-X-BYTERANGE stream reads one file at many offsets, and only offset zero
+        has a header to sniff, so that result is reused for the rest. Without it, the
+        range is still sniffed (ranges usually start on a TS packet or fMP4 box), but
+        only the offset-zero result is cached.
         """
         upstream = resp.headers.get("Content-Type") or "video/MP2T"
         partial = (resp.headers.get("Content-Range") or "")
@@ -1247,10 +1190,9 @@ class Handler(BaseHTTPRequestHandler):
         return ctype
 
     def _expired_presign(self, exc):
-        """Whether this error was an expired presign, which is answered by re-resolving.
+        """If this error is an expired presign, re-resolve and answer 404.
 
-        The playlist we handed out is stale, so force a re-resolve; the client's next
-        poll gets freshly signed URLs.
+        The client's next playlist poll then gets freshly signed URLs.
         """
         if exc.code not in (403, 404):
             return False
@@ -1261,10 +1203,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _open_segment(self, url, referer, rng=None):
-        """Fetch a segment, giving a refusal one more chance before believing it.
+        """Fetch a segment, retrying a 403 or 404 once (see SEGMENT_REFUSALS).
 
-        See SEGMENT_REFUSALS. Only 403 and 404 are retried here; everything else is
-        already handled where it arises, and a 5xx by open_media itself.
+        open_media handles 5xx itself.
         """
         extra = {"Range": rng} if rng else None
         for attempt in range(SEGMENT_REFUSALS + 1):
@@ -1276,18 +1217,15 @@ class Handler(BaseHTTPRequestHandler):
                 exc.close()
                 say("segment %d - asking once more before calling it expired" % exc.code)
                 time.sleep(RETRY_BACKOFF)
-        raise AssertionError("unreachable")          # the loop returns or raises
+        raise AssertionError("unreachable")
 
     def _shim_offset(self, url, referer):
-        """How much is glued in front of this segment's media, remembered per URL.
+        """Length of any prefix before this segment's media, cached per URL.
 
-        Whichever request first sees the head of the file works this out. A ranged one
-        need not see it, so for a segment we have not met the opening bytes are fetched
-        on their own -- once per URL, and never at all for a stream without a shim,
-        since the first request for each segment is the unranged one that fills it.
+        Usually the first, unranged request records it. If a ranged request comes first,
+        the opening bytes are fetched separately, once per URL.
 
-        A probe that fails answers nothing and is not remembered: the next request for
-        this segment asks again rather than inheriting a guess made during a blip.
+        A failed probe is not cached, so a network blip does not stick.
         """
         seen = known_shim(url)
         if seen is not None:
@@ -1297,15 +1235,15 @@ class Handler(BaseHTTPRequestHandler):
                                     "bytes=0-%d" % (SNIFF_BYTES - 1)) as resp:
                 head = resp.read(SNIFF_BYTES)
         except Exception:                                         # noqa: BLE001
-            return 0                    # unknowable for now; relay it as it comes
+            return 0                    # unknown for now; relay unchanged
         return remember_shim(url, media_offset(head))
 
     def _serve_segment(self, url, referer):
-        """Answer from the cache if we hold this segment, otherwise from the origin.
+        """Serve a segment from the cache, or else from the origin.
 
-        A Range is honoured either way. AVFoundation opens most segments with one, and
-        an #EXT-X-BYTERANGE playlist is nothing but ranges -- answering all of them with
-        the whole file handed the decoder garbage.
+        Range is honoured either way. AVFoundation requests most segments with one, and
+        an #EXT-X-BYTERANGE playlist uses nothing else. Returning the whole file for
+        every range fed the decoder garbage.
         """
         rng = self.headers.get("Range")
         held = cache_get(url)
@@ -1313,10 +1251,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_segment(held[1], held[0], rng)
             return
 
-        # A range is measured against the media, not against the file it is buried in,
-        # so a shimmed segment cannot be answered by passing the client's range
-        # upstream. Fetch it whole and slice it here; the cache means that is one trip
-        # for the segment rather than one per range.
+        # The client's range is relative to the media, not the prefixed file, so it
+        # cannot be passed upstream. Fetch the whole segment and slice it here; the
+        # cache keeps that to one upstream fetch per segment.
         if rng and self._shim_offset(url, referer):
             try:
                 resp = self._open_segment(url, referer)
@@ -1342,7 +1279,7 @@ class Handler(BaseHTTPRequestHandler):
         self._relay_segment(url, resp)
 
     def _send_segment(self, data, ctype, rng):
-        """Answer out of bytes we already hold, cutting the range from them ourselves."""
+        """Serve from bytes in memory, applying any range here."""
         span = parse_range(rng, len(data))
         body = data[span[0]:span[1] + 1] if span else data
 
@@ -1359,16 +1296,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _relay_segment(self, url, resp):
-        """Copy the segment out as it arrives, keeping a copy if it is worth keeping.
+        """Stream the segment to the client as it arrives, caching it if it fits.
 
-        Only the first chunk is held to sniff the container; everything after it goes
-        straight to the client, so playback starts without waiting on a full download.
+        Only the first chunk is held back to sniff the container, so playback starts
+        without waiting for the full download.
         """
         with resp:
             head = resp.read(SNIFF_BYTES)
             partial = resp.status == 206
-            # Only an answer that starts at the beginning of the file can show what is
-            # in front of the media, and only then is there anything to take off.
+            # A prefix can only be seen, and stripped, in a response from offset zero.
             offset = 0 if partial else remember_shim(url, media_offset(head))
             head = head[offset:]
             ctype = self._segment_type(url, head, resp)
@@ -1385,7 +1321,7 @@ class Handler(BaseHTTPRequestHandler):
             if length:
                 self.send_header("Content-Length", length)
             else:
-                # Length unknown upstream, so the client reads until we hang up.
+                # Length unknown upstream, so the client reads until close.
                 self.send_header("Connection", "close")
                 self.close_connection = True
             self.end_headers()
@@ -1393,9 +1329,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.head_only:
                 return
 
-            # A ranged answer is a slice of a file, not the segment, so it is never
-            # kept under the segment's own URL. Anything outsized stops being kept the
-            # moment it outgrows the budget, and still finishes streaming.
+            # A ranged response is only part of the file, so it is not cached under the
+            # segment's URL. An oversized segment stops being cached but still streams.
             kept = None if partial else [head]
             size = len(head)
             self.wfile.write(head)
@@ -1418,8 +1353,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """Answer HEAD with the GET headers and no body.
 
-        AVFoundation opens a segment with one before it commits to the download, and
-        the default handler answers 501, which reads to the player as a broken stream.
+        AVFoundation sends HEAD before some downloads, and the default handler's 501
+        looks to it like a broken stream.
         """
         self.head_only = True
         try:
@@ -1430,8 +1365,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global last_activity
         path = self.path.split("?")[0]
-        # Telemetry must not count as activity, or a paused tab would keep the proxy
-        # alive forever and defeat the idle shutdown.
+        # Telemetry does not count as activity, or a paused tab would keep the proxy
+        # alive forever.
         if not path.endswith("/_evt"):
             last_activity = time.time()
         prefix = "/" + opts.token
@@ -1450,9 +1385,8 @@ class Handler(BaseHTTPRequestHandler):
 
             elif path == "/_evt":
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                # Whoever holds the token writes these, and /api/log serves them
-                # back to the operator. Control characters would let a line be forged
-                # in the middle of another one, so they do not survive the trip.
+                # Anyone with the token can write these, and /api/log shows them to the
+                # operator. Control characters are stripped so log lines cannot be forged.
                 fields = " ".join("%s=%s" % (k, scrub(v[0]))
                                   for k, v in sorted(query.items()) if k != "e")
                 say("  [player] %-16s %s" % (scrub(query.get("e", ["?"])[0]), fields))
@@ -1497,10 +1431,9 @@ def lan_ip():
 def bind_server(first_port, last_port=None):
     """Take the first free port at or above first_port, so concurrent streams coexist.
 
-    `last_port` is a ceiling somebody else is holding us to -- under docker, the end of
-    the range published at deploy time. Binding past it would succeed inside the
-    container and be unreachable outside it, which is worse than not binding at all, so
-    the ceiling is honoured rather than the search range.
+    `last_port` is an external ceiling, such as the end of a published docker range. A
+    port past it would bind inside the container but be unreachable from outside, which
+    is worse than failing, so it overrides PORT_SEARCH_RANGE.
     """
     end = last_port + 1 if last_port else first_port + PORT_SEARCH_RANGE
     for port in range(first_port, end):
@@ -1513,12 +1446,11 @@ def bind_server(first_port, last_port=None):
 
 
 def state_dir():
-    """A directory only this user can read, for files that name a token and a pid.
+    """A directory only this user can read, for state files holding a token and a pid.
 
-    They used to sit in /tmp under a predictable name and the default umask: any local
-    account could read a running stream's token, or plant a file naming a pid of its
-    choosing for the web app to go and signal. Ownership is checked rather than assumed,
-    so a directory somebody else got there first with is refused instead of used.
+    These used to sit in /tmp with a predictable name and the default umask, so any
+    local account could read a stream's token or plant a pid for the web app to signal.
+    Ownership is checked, so a directory another user created first is refused.
     """
     path = os.path.join(tempfile.gettempdir(), "play-web-stream-%d" % os.getuid())
     try:
@@ -1546,8 +1478,7 @@ def state_files():
 def owns_pid(pid):
     """Whether this pid is one of our proxies, so a recycled one is not signalled.
 
-    Without procfs there is nothing to read, and the state file -- now in a directory
-    only this user can write -- is trustworthy enough on its own.
+    Without procfs, trust the state file, since only this user can write its directory.
     """
     try:
         with open("/proc/%d/cmdline" % pid, "rb") as fh:
@@ -1597,8 +1528,7 @@ def write_state(source, port, url):
 def watch_idle(timeout, source):
     """Shut down once nothing has fetched anything for `timeout` seconds.
 
-    The point is that the LAN-facing port closes on its own when the stream stops being
-    watched, instead of staying open until someone remembers to kill it.
+    This closes the LAN-facing port once the stream is no longer watched.
     """
     while True:
         time.sleep(15)
@@ -1658,17 +1588,14 @@ def probe_profiles(url, referer=None):
 
 
 def classify_gate(url, referer=None):
-    """Decide whether an origin is refusing this client outright.
+    """Decide whether an origin refuses this client regardless of headers.
 
-    A Referer gate and a client gate both surface as 403, but they part company under
-    varied headers: supplying the Referer clears the first and changes nothing for the
-    second. When every profile comes back with the same refusal, no header this proxy
-    can send will help -- the origin is screening the client itself rather than the
-    request, and urllib cannot pass however it is configured.
+    A Referer gate and a client gate both return 403, but a Referer clears only the
+    first. If every header profile gets the same refusal, the origin is screening the
+    client itself and no urllib configuration will pass.
 
-    Worth naming because the two failures look identical from here. Reporting a client
-    gate as "no playlist found" sent people hunting for a missing Referer that was
-    never the problem.
+    Reporting a client gate as "no playlist found" sent people looking for a missing
+    Referer.
     """
     attempts = probe_profiles(url, referer)
     codes = {code for _, code, _ in attempts}
@@ -1679,18 +1606,17 @@ def classify_gate(url, referer=None):
 def clear_gate(url, referer=None):
     """Classify a refusal and, if it is a client gate, try once more as a browser.
 
-    The report's `handshake` says how that went. "passed" means the browser's handshake
-    got through, and every fetch from here on presents it. "refused" means the origin
-    turned that down as well, and the attempt is listed with the others. "unavailable"
-    means curl_cffi is not installed, so there was nothing to try. It stays None when
-    the origin was not gated at all -- a Referer problem, or an expired URL.
+    The report's `handshake` is "passed" (the browser handshake worked and is now used
+    for every fetch), "refused" (it failed too; the attempt is added to the list),
+    "unavailable" (no curl_cffi), or None when the origin was not gated (a Referer
+    problem or an expired URL).
     """
     report = classify_gate(url, referer)
     if not report.gated:
         return report
     if not handshake_available():
         return report._replace(handshake="unavailable")
-    if handshake() == "browser":                  # the refusal came to a browser already
+    if handshake() == "browser":                  # already refused as a browser
         return report._replace(handshake="refused")
 
     use_browser_handshake()
@@ -1711,7 +1637,7 @@ def clear_gate(url, referer=None):
 
 
 class Gated(Exception):
-    """An origin refused every client this proxy can be. `report` says what was tried."""
+    """An origin refused every client this proxy can present. `report` lists attempts."""
 
     def __init__(self, url, report):
         super().__init__("origin refuses this client: every request returned HTTP %s"
@@ -1723,9 +1649,9 @@ class Gated(Exception):
 def fetch_through_gate(url, referer=None, **kw):
     """fetch(), and once more as a browser if a client gate refused the first attempt.
 
-    Only a refusal that classify_gate confirms is retried: a 403 that a Referer would
-    have cleared, or an expired URL, is raised exactly as fetch() raises it. A gate
-    that cannot be cleared raises Gated instead, carrying the report.
+    Only a refusal classify_gate confirms is retried; anything else (a Referer 403, an
+    expired URL) is raised as fetch() raises it. A gate that cannot be cleared raises
+    Gated with the report.
     """
     try:
         return fetch(url, referer=referer, **kw)
@@ -1736,7 +1662,7 @@ def fetch_through_gate(url, referer=None, **kw):
         if not gate.gated:
             raise
         if gate.handshake != "passed":
-            exc.close()     # it stays chained to the Gated, and its socket need not
+            exc.close()     # Gated keeps a reference to it; its socket need not stay open
             raise Gated(url, gate) from None
     return fetch(url, referer=referer, **kw)
 
@@ -1757,9 +1683,8 @@ def verify_through_gate(url, referer):
 def discover_through_gate(page_url, referer=None):
     """discover(), and once more as a browser if a client gate stood in the way.
 
-    The page is fetched as discover() fetches it. `referer` is for the gate probe only,
-    which wants the Referer the origin would expect -- the page itself, unless the
-    caller knows better. Raises Gated when a gate was found and could not be cleared.
+    `referer` is only used for the gate probe and defaults to the page itself. Raises
+    Gated when a gate was found and could not be cleared.
     """
     blocked = []
     found = discover(page_url, blocked=blocked)
@@ -1776,7 +1701,7 @@ def discover_through_gate(page_url, referer=None):
 
 
 def explain_gate(report):
-    """Why a client gate is where this ends, and what to do instead: a paragraph each.
+    """Return (why, what to do instead) for a client gate, one paragraph each.
 
     report_gate prints these; the web app shows them as the error and its hint.
     """
@@ -1809,15 +1734,13 @@ def report_gate(report, url, out=None):
 
 
 def verify_playlist(url, referer):
-    """Say whether a URL really serves an HLS playlist, and with which Referer.
+    """Check whether a URL serves an HLS playlist, and with which Referer.
 
-    Reads only the opening bytes: a candidate that turns out to be a web page should
-    not cost a full download.
+    Reads only the opening bytes, so a candidate that is a web page costs little.
 
-    On failure `detail` says what actually happened for each attempt -- a status code,
-    a network error, or what arrived in place of a playlist. Reporting only "not a
-    playlist" made an expired token, a blocked request and a typo look identical, which
-    sends people hunting for the wrong problem.
+    On failure `detail` gives each attempt's status code, network error, or what came
+    back instead. A bare "not a playlist" made an expired token, a blocked request and
+    a typo indistinguishable.
     """
     attempts, tried, codes = [], [], []
 
@@ -1858,7 +1781,7 @@ def rank_candidates(urls, page_url):
     scored = []
     for url in urls:
         strong = bool(STRONG_SIGNAL.search(url))
-        # A same-host URL matching only the word "stream" is almost always a nav link.
+        # A same-host URL matching only "stream" is almost always a nav link.
         if not strong and urllib.parse.urlsplit(url).netloc == page_host:
             continue
         scored.append((0 if strong else 1, url))
@@ -1868,9 +1791,9 @@ def rank_candidates(urls, page_url):
 def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
     """Find the playlist behind a page without a browser.
 
-    These pages are server-rendered, so the player config is already in the HTML: either
-    a URL outright or a base64 blob. Only reach for Playwright when this comes back
-    empty, which means the player is genuinely built at runtime.
+    These pages are server-rendered, so the player config is in the HTML as a URL or a
+    base64 blob. Use Playwright only when this finds nothing, which means the player is
+    built at runtime.
     """
     seen = seen if seen is not None else set()
     if depth < 0 or page_url in seen:
@@ -1880,8 +1803,8 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
     try:
         body, _ = fetch(page_url, referer=referer, timeout=20)
     except urllib.error.HTTPError as exc:
-        # A page the origin refuses outright is worth surfacing: it is a different
-        # problem from a page that loads and simply has no playlist in it.
+        # A refused page is a different problem from a page with no playlist, so
+        # record it for the gate check.
         if blocked is not None and exc.code in BLOCK_CODES:
             blocked.append(page_url)
         exc.close()
@@ -1911,8 +1834,7 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
 
     ordered = rank_candidates(ordered, page_url)[:25]
     if ordered:
-        # The pool's threads are not this one, and which client we present is held per
-        # thread so that one resolve cannot switch another's. It has to be carried in.
+        # The handshake setting is per thread, so pass it into the pool's threads.
         presenting = handshake()
 
         def check(url):
@@ -1924,8 +1846,8 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
         for url, check in zip(ordered, checked):
             if check.ok:
                 return {"page": page_url, "playlist": url, "referer": check.referer}
-            # Same refusal under every Referer means the origin never looked at the
-            # request -- worth reporting rather than filing as "not a playlist".
+            # The same refusal with and without a Referer suggests a client gate, not a
+            # missing playlist.
             if (blocked is not None and check.codes
                     and set(check.codes) <= BLOCK_CODES and len(set(check.codes)) == 1):
                 blocked.append(url)
@@ -1947,7 +1869,7 @@ BROWSER_NOTE = "browser (the origin refused Python's TLS handshake; presenting S
 
 
 def probe():
-    """Report what the source actually serves, without starting a server."""
+    """Report what the source serves, without starting a server."""
     try:
         body, ctype = fetch_through_gate(opts.source, referer=opts.referer)
     except Gated as exc:
@@ -1995,9 +1917,8 @@ def probe():
 def self_test():
     """Run the checks that live beside this script.
 
-    They used to sit in this function as a hand-rolled harness, which could not be
-    filtered, collected, or pointed at the resolver and the web app -- so they are
-    pytest now, in tests/. This stays as the entry point the skill documents.
+    The checks are pytest tests in tests/. This remains as the entry point SKILL.md
+    documents.
     """
     tests = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests")
     if not os.path.isdir(tests):
@@ -2055,8 +1976,8 @@ def main():
     opts = ap.parse_args()
 
     if opts.egress_proxy:
-        # Into the environment rather than a global: the same variable is what a
-        # container sets, and it is what the browser fallback reads in its turn.
+        # Set in the environment because that is where a container sets it and where
+        # the browser fallback reads it.
         os.environ["PWS_EGRESS_PROXY"] = opts.egress_proxy
 
     if opts.self_test:
@@ -2101,8 +2022,7 @@ def main():
             return
 
     opts.ip = opts.ip or lan_ip()
-    # 16 bytes, not 8: this token is the only credential on a proxy that binds every
-    # interface, so it is worth being unguessable rather than merely unlikely.
+    # 16 bytes: this token is the only credential on a proxy bound to every interface.
     opts.token = secrets.token_hex(16)
     configure_cache(opts.cache_mb)
 

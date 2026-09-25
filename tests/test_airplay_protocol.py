@@ -1,9 +1,8 @@
-"""The SETUP that opens a hand-off, against a receiver that is only a script.
+"""The SETUP that opens a hand-off, against a scripted receiver.
 
-Which clock the session asks for is the difference between a television that plays
-and one that accepts everything and then says nothing, so the order is pinned here:
-PTP first, NTP only when the receiver refuses PTP, and neither when told otherwise.
-Everything past pair-verify is real; the transport underneath it is not.
+With the wrong clock a television accepts the hand-off and then never plays, so the
+order is pinned here: PTP first, NTP only if the receiver refuses PTP, unless the
+caller pins one. Everything after pair-verify is real; the transport is faked.
 """
 
 import asyncio
@@ -25,11 +24,10 @@ class Response:
 
 
 class Receiver:
-    """Answers the exchange a real receiver would, and remembers what it was sent.
+    """Answers as a real receiver would and records what it was sent.
 
-    `refuse_ptp` is a receiver from before PTP-timed video, which refuses that SETUP
-    outright. Starting playback is what makes it report `playing`, since that is the
-    event `play()` waits for.
+    `refuse_ptp` models an older receiver that rejects a PTP SETUP. It reports `playing`
+    once playback starts, because `play()` waits for that event.
     """
 
     def __init__(self, refuse_ptp=False):

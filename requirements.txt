@@ -1,7 +1,7 @@
-# Only the web app needs these; hls_proxy.py stays pure stdlib on purpose.
-curl_cffi>=0.8        # optional even to the proxy: a browser's TLS handshake, for origins
-                      # that refuse Python's; without it that case is reported, not retried
+# Only the web app needs these; hls_proxy.py is standard library only.
+curl_cffi>=0.8        # optional for the proxy: a browser TLS handshake for origins that
+                      # refuse Python's. Without it, that failure is reported, not retried
 playwright>=1.44      # fallback for pages whose player is built at runtime
 segno>=1.6            # QR codes, so a phone or TV can take the URL without typing it
-pyatv==0.18.0         # pinned: airplay_protocol reaches past the public API, so a
-                      # version bump has to be read before it is taken
+pyatv==0.18.0         # pinned: airplay_protocol uses private API, so review the
+                      # changes before any version bump

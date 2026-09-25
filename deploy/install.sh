@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the web app on this machine. Run it on the box that will serve the
-# streams, from the checkout -- see "Put it on the right machine" in the README.
+# Install the web app on this machine. Run it from the checkout on the machine that
+# will serve the streams (see "Put it on the right machine" in the README).
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,19 +10,19 @@ python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
-# Chromium's own shared libraries need root; everything else does not.
+# Chromium's shared libraries need root; nothing else does.
 .venv/bin/playwright install chromium
 sudo .venv/bin/playwright install-deps chromium
 
-# The unit holds this writable against an otherwise read-only filesystem, and a
-# ReadWritePaths= that names nothing refuses to start -- so it exists before then.
+# The unit makes this the one writable path on a read-only filesystem, and it will
+# not start if a ReadWritePaths= entry is missing, so create it first.
 mkdir -p "$HOME/.config/play-web-stream"
-# 700, because airplay.py creates it that way when it gets there first and
-# makedirs(exist_ok=True) will not tighten a directory that already exists.
+# 700 to match what airplay.py creates. makedirs(exist_ok=True) will not tighten an
+# existing directory.
 chmod 700 "$HOME/.config/play-web-stream"
 
-# __HOME__ rather than systemd's %h: in a system unit that expands to root's home
-# whatever User= says, which is not where this app keeps its credentials.
+# __HOME__ instead of systemd's %h, which in a system unit expands to root's home
+# whatever User= says. The credentials live in the user's home.
 sed -e "s|__USER__|$USER|g" -e "s|__DIR__|$DIR|g" -e "s|__HOME__|$HOME|g" \
     deploy/play-web-stream.service \
   | sudo tee /etc/systemd/system/play-web-stream.service >/dev/null

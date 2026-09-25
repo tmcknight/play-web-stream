@@ -2,128 +2,108 @@
 
 ## What this is meant to be reachable from
 
-A LAN. Nothing else. The web app binds all interfaces so that phones and Apple TVs can
-reach it, and refuses any client outside private address space — but that check is a
-guard rail, not a perimeter. There is no authentication in front of it, by design: the
-network it sits on *is* the authentication.
+A LAN only. The web app binds all interfaces for phones and Apple TVs, and refuses
+clients outside private address space. That check is a safeguard, not a perimeter: there
+is no authentication, so the network is the only protection.
 
-So do not give it a public hostname through nginx-proxy-manager, a Cloudflare tunnel, or
-a port forward. Anyone who reaches it can make the machine fetch arbitrary URLs and
-re-serve the bytes, which is an open relay for third-party video attributable to your
-address and your domain. Sustained video through a Cloudflare tunnel is against their
-terms besides.
+Don't expose it through nginx-proxy-manager, a Cloudflare tunnel or a port forward.
+Anyone who reaches it can make the machine fetch any URL and re-serve the bytes: an open
+relay for third-party video, traced to your address and domain. Sustained video through
+a Cloudflare tunnel also breaks their terms.
 
-The `PWS_ALLOW_ANY=1` escape hatch exists so the refusal can be lifted on a network the
-operator understands better than the check does. It is not a supported deployment.
+`PWS_ALLOW_ANY=1` lifts the refusal for an operator who knows their network better than
+the check does. It is not a supported deployment.
 
 ## The name you reach it by
 
-The client's address establishes which network it is on. It does not establish which
-*page* is driving that client, and those are different questions: a site can point its
-own hostname at this app's LAN address, and a browser in the house will then send it
-requests that pass every address check here — and read the replies, because the browser
-still believes it is talking to that site. The phone in the room is on the advertised
-`/24`, so that route reaches the AirPlay controls as well.
+A client's address shows its network, not which *page* is driving it. A site can point
+its own hostname at this app's LAN address; a browser in the house then sends requests
+that pass every address check, and reads the replies, because it thinks it is talking to
+that site. The phone in the room is on the advertised `/24`, so this also reaches the
+AirPlay controls.
 
-So the `Host` header has to be one this app answers to. An address always is: there is
-no name for anyone else's DNS to repoint. `localhost` always is, because that is how the
-box's own browser and its health check arrive. A hostname is only if `PWS_ALLOW_HOSTS`
-names it — and the
-rule for that list is that you serve its DNS yourself, on your router, Pi-hole, Unbound
-or mDNS. A name resolved by somebody else is a name somebody else can move.
+So the `Host` header must be one the app answers to:
 
-Reach it by address or by QR and the list stays empty. Reach it at
-`nas.local` or `pws.lan` and that name goes in the list, or the app answers 403 and
-says which variable to set.
+- An IP address always is: there is no name for someone else's DNS to repoint.
+- `localhost` always is, for the machine's own browser and health check.
+- A hostname only if `PWS_ALLOW_HOSTS` lists it. List only names whose DNS you serve
+  (router, Pi-hole, Unbound or mDNS), since someone else's DNS can move a name.
 
-Requests a browser marks `Sec-Fetch-Site: cross-site` are refused on the same grounds.
-`GET /api/resolve` is a "simple" request that CORS lets another site issue without
-asking first; it cannot read the reply, but it can make this app go and fetch something,
-which is enough.
+Reach it by address or QR code and the list stays empty. Reach it at `nas.local` or
+`pws.lan` and add that name, or the app answers 403 and names the variable to set.
 
-`PWS_ALLOW_ANY=1` lifts the `Host` check along with the address one, since both are
-guard rails around the same assumption. It does not lift the cross-site refusal, which
-is about a different thing entirely.
+Requests marked `Sec-Fetch-Site: cross-site` are refused for the same reason.
+`GET /api/resolve` is a CORS "simple" request that another site can send without a
+preflight. It can't read the reply, but it can make this app fetch something.
+
+`PWS_ALLOW_ANY=1` lifts the `Host` check too, as both rest on the same assumption. It
+doesn't lift the cross-site refusal, which guards against something else.
 
 ## What the container is holding
 
-Chromium runs with its own sandbox off, because switching it on means giving the
-container back the user namespaces Docker's seccomp profile withholds — loosening the
-boundary to tighten what sits inside it. The compose files go the other way: no
-capabilities, `no-new-privileges`, a read-only root with tmpfs for `/tmp` and `$HOME`,
-and a pid cap. The process already runs as an unprivileged user with nothing on the
-image to escalate to.
+Chromium's own sandbox is off. Turning it on needs the user namespaces Docker's seccomp
+profile withholds, which would loosen the container to tighten the browser. The compose
+files tighten the container instead: no capabilities, `no-new-privileges`, a read-only
+root with tmpfs for `/tmp` and `$HOME`, and a pid limit. The process runs unprivileged,
+with nothing on the image to escalate to. This matters because the fallback resolver
+runs a real browser on whatever page it is given.
 
-That boundary is load-bearing, because the fallback resolver drives a real browser over
-whatever page it is pointed at.
-
-Installed with `deploy/install.sh` there is no container, and the systemd unit carries
-the same posture by the other mechanism: no new privileges, no capabilities, a
-read-only filesystem, your home readable but not writable, and one path held open for
-the AirPlay credentials. `systemd-analyze security play-web-stream` scores it. Three
-directives that look like they belong there are deliberately absent, and the unit says
-why beside each -- the short version is that a browser is not a normal service, and
-that the proxies outlive a restart on purpose.
+`deploy/install.sh` has no container; its systemd unit applies the same limits: no new
+privileges, no capabilities, a read-only filesystem, home readable but not writable, and
+one writable path for AirPlay credentials. `systemd-analyze security play-web-stream`
+scores it. Three directives you might expect are left out, with reasons in the unit: a
+browser is not a normal service, and the proxies must outlive a restart.
 
 ## What is already held tighter than the rest
 
-**The AirPlay hand-off** is server-initiated — the app, holding paired credentials on the
-household LAN, starts playback on a television in the house — so a viewer who is not in
-the house pressing it would be borrowing the server's network position. Anything
-forwarded to the app arrives from loopback and so passes the private-address check like
-anyone else, which is why that route asks for a stronger signal instead: the client has
-to sit in the same `/24` as the address the proxies advertise. Loopback is refused with
-everything else off that subnet.
-`GET /api/airplay` and `GET /api/receivers` decline to name the televisions in the house
-to such a client rather than merely refusing to act, and the three POST routes answer
-403. Pairing is held to the same bar as playback, because it writes credentials.
+**The AirPlay hand-off** is started by the server, which holds paired credentials and
+starts playback on a television in the house. A remote viewer pressing it would borrow
+the server's network position. Forwarded requests arrive from loopback and pass the
+private-address check, so this route requires the client to be in the advertised `/24`.
+Loopback is refused too. Such clients get no list of televisions from `GET /api/airplay`
+or `GET /api/receivers`, and 403 from the three POST routes. Pairing follows the same
+rule, because it writes credentials.
 
-**The URLs a proxy hands out.** Each proxy signs its playlist and segment URIs with a key
-that lives and dies with the process, so whoever holds a stream's path token can fetch
-that stream and nothing else. A URL forged for another host on the network gets a 404.
-The token is the only credential on a running proxy — there is no check on who is asking
-— so treat a playback URL like a password, and stop the stream when nobody is watching.
+**Proxy URLs.** Each proxy signs its playlist and segment URIs with a key that lasts only
+as long as the process. A stream's path token fetches that stream and nothing else; a URL
+forged for another host gets a 404. The token is the only credential on a running proxy,
+so treat a playback URL like a password, and stop streams nobody is watching.
 
-**Paired AirPlay credentials** are written to `/config/pyatv.conf` in the container, or
+**Paired AirPlay credentials** live in `/config/pyatv.conf` in the container, or
 `~/.config/play-web-stream/pyatv.conf` from a checkout. They are not in the repo and must
 not be committed.
 
 ## What the egress proxy does and does not hide
 
-With `PWS_EGRESS_PROXY` set, every upstream fetch — playlist, segments, header probe, and
-the headless browser's page load — leaves through it, so a stream origin sees the exit
-node rather than this connection. What that is worth is bounded in ways worth stating:
+With `PWS_EGRESS_PROXY` set, every upstream fetch (playlist, segments, header probe, the
+headless browser's page load) goes through it, so origins see the exit node. Limits:
 
-- **Only the origin's view is changed.** The app is still on the LAN, still serves the
-  LAN directly, and is still reachable exactly as before. Nothing about the tunnel makes
-  it safer to expose.
-- **The proxy credentials are configuration, not a secret this holds carefully.** They
-  sit in the environment, are visible to anything that can read it, and are printed
-  nowhere: every log line and API answer carries the proxy with its credentials stripped.
-- **A LAN destination is never sent through it**, by address rather than by name — so a
-  hostname that happens to resolve to a private address would be proxied. Upstream media
-  is named and addressed publicly, so that is a fetch nothing here makes, but it is the
-  edge of the rule rather than an oversight.
-- **A tunnel that stops fails closed.** Fetches go through the proxy or they error; there
-  is no fallback to a direct connection anywhere in the pipeline, and `GET /api/egress`
-  reports the failure rather than answering from this address.
-- **`PWS_FORCE_PROXY=0` reopens it.** A stream that needs no rewriting is then handed to
-  the player as the origin's own URL, and the player — or the Apple TV holding that URL —
-  fetches the origin from this network. It defaults on for that reason.
+- **Only the origin's view changes.** The app still serves the LAN directly and is
+  reachable as before. The tunnel doesn't make it safer to expose.
+- **Proxy credentials are plain configuration.** They sit in the environment, readable by
+  anything that can read it, and are never printed: logs and API responses strip them.
+- **LAN destinations bypass it by address, not name.** A hostname resolving to a private
+  address would be proxied. Upstream media uses public names and addresses, so nothing
+  here makes such a fetch.
+- **A stopped tunnel fails closed.** Fetches go through the proxy or error; nothing falls
+  back to a direct connection, and `GET /api/egress` reports the failure.
+- **`PWS_FORCE_PROXY=0` reopens the leak.** A stream needing no rewriting is handed out as
+  the origin's own URL, which the player or Apple TV fetches from your network. That is
+  why it defaults on.
 
-## What is deliberately not defended
+## What is not defended
 
-The proxy fetches whatever URL it is told to, with whatever `Referer` the resolver worked
-out the origin wanted. That is the entire product, so it is not treated as a
-server-side request forgery bug. It is the reason the LAN boundary matters.
+The proxy fetches whatever URL it is given, with whatever `Referer` the resolver decided
+the origin wants. That is the product, so it is not treated as a server-side request
+forgery bug. It is why the LAN boundary matters.
 
 ## Scope
 
-This is a personal project maintained on a best-effort basis, with no release cadence and
-no supported versions table: the fix, if there is one, lands on `main`.
+A personal project, maintained on a best-effort basis. No release schedule and no
+supported versions table. Fixes land on `main`.
 
 ## Reporting
 
-Open a [security advisory](https://github.com/tmcknight/play-web-stream/security/advisories/new)
-rather than a public issue for anything that lets a client reach past the boundaries
-above. For everything else an ordinary issue is fine.
+Open a [security advisory](https://github.com/tmcknight/play-web-stream/security/advisories/new),
+not a public issue, for anything that lets a client get past the boundaries above.
+Anything else can be an ordinary issue.

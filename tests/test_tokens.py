@@ -1,8 +1,7 @@
 """The signature on every rewritten URI.
 
-Without it /seg/ fetches whatever URL it is handed, and the path token -- which travels
-in a URL people paste and hand to each other -- is a key to everything the box can
-reach.
+Without it /seg/ fetches any URL it is given, and the path token (which people paste
+and share) would open everything the box can reach.
 """
 
 import base64
@@ -35,7 +34,7 @@ def test_refuses_a_token_minted_for_the_other_route():
 
 
 def test_refuses_a_swapped_url():
-    """The attack: keep a real signature, point it somewhere on the local network."""
+    """Keep a real signature but point the URL at the local network."""
     signature = token_for(URL).split(".")[1]
     forged = base64.urlsafe_b64encode(b"http://127.0.0.1:8786/api/streams").decode()
     with pytest.raises(BadToken):
@@ -66,7 +65,7 @@ def test_signature_covers_the_route():
     ("a\x00b\x7f", "a b "),
 ])
 def test_a_player_event_cannot_forge_a_log_line(raw, clean):
-    """Whoever holds the token writes these, and /api/log serves them to the operator."""
+    """Anyone with the token can send these, and /api/log shows them to the operator."""
     assert hls_proxy.scrub(raw) == clean
 
 

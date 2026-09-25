@@ -1,7 +1,6 @@
 # Contributing
 
-Issues and pull requests are welcome. This is a personal project, so expect a slow and
-occasionally silent maintainer rather than a triage rota.
+Issues and pull requests are welcome. This is a personal project, so replies may be slow.
 
 ## Running the checks
 
@@ -11,44 +10,39 @@ python3 -m pytest -q          # or: python3 hls_proxy.py --self-test
 ruff check .
 ```
 
-CI runs the suite on Python 3.9 through 3.14 and ruff over everything, so a change that
-only passes on the interpreter you happen to have will come back.
+CI runs the suite on Python 3.9 to 3.14, plus ruff, so test beyond your local Python.
 
-`tests/origin.py` is a fake origin with every awkward behaviour this code exists to cope
-with as a switch: a Referer gate, a gate on the client itself, segments served as
-`text/plain`, presigned URLs that expire, byte ranges, and a window that slides. Most of
-the suite runs a real proxy as a subprocess against it and asserts on the wire, because
-that is where the failures live — a stream that resolves cleanly and then 403s on every
-segment looks perfectly healthy from inside the process. Prefer adding a switch there
-over mocking the network.
+`tests/origin.py` is a fake origin with each awkward behaviour as a switch: a Referer
+gate, a gate on the client, segments served as `text/plain`, expiring presigned URLs,
+byte ranges and a sliding window. Most tests run a real proxy as a subprocess against it
+and check the wire, because a stream that 403s on every segment can look fine from inside
+the process. Add a switch to `origin.py` instead of mocking the network.
 
-Some tests skip without `curl_cffi` or `pyatv` installed. That is expected from a bare
-environment; `requirements-dev.txt` pulls both in.
+Some tests skip without `curl_cffi` or `pyatv`. `requirements-dev.txt` installs both.
 
-## Two constraints worth knowing before you start
+## Two constraints
 
-**`hls_proxy.py` is standard library only.** It is a single file that runs from anywhere
-with nothing installed, and the Claude Code skill depends on that — it is dropped onto
-whatever Python a machine already has. `curl_cffi` is reached for only behind an
-`ImportError` guard, and its absence has to leave the old behaviour intact. Anything that
-needs a dependency outright belongs in `webapp.py` or one of the modules beside it.
+**`hls_proxy.py` is standard library only.** It is a single file that runs anywhere with
+nothing installed, and the Claude Code skill relies on that: it is copied onto whatever
+Python a machine has. `curl_cffi` is only used behind an `ImportError` guard, and without
+it the old behaviour must stay intact. Anything needing a hard dependency goes in
+`webapp.py` or a module beside it.
 
-**`pyatv` is pinned.** `airplay_protocol.py` reaches past its public API, so a version
-bump has to be read rather than taken.
+**`pyatv` is pinned.** `airplay_protocol.py` uses its internals, so read the changes
+before bumping the version.
 
 ## Style
 
-Comments and docstrings explain *why*, in prose, in sentences. The existing ones are the
-specification for this — read a few before writing more. A comment that restates the line
-below it is worse than no comment. Names and messages are written for whoever is reading
-a log at eleven at night.
+Comments and docstrings explain *why*, briefly, in plain sentences. Don't write comments
+that restate the code. Log lines and error messages should be clear to someone debugging
+a broken stream.
 
-Line length is 100. Ruff's config in `pyproject.toml` is the arbiter of everything else;
-the three ignores there are deliberate and explained in place.
+Line length is 100. Ruff's config in `pyproject.toml` covers the rest; each of its three
+ignores has a comment explaining it.
 
 ## What is out of scope
 
-DRM services, DASH, and anything that amounts to circumventing an access control rather
-than correcting a `Content-Type`. See the README's [Scope](README.md#scope). Features
-that would need the app to be safely reachable from the public internet are also out —
-see `SECURITY.md` for why the LAN boundary is load-bearing rather than incidental.
+DRM services, DASH, and anything that gets around an access control instead of
+correcting a `Content-Type`. See the README's [Scope](README.md#scope). Features that
+would need the app to be safely reachable from the public internet are also out. See
+`SECURITY.md` for why the LAN boundary matters.

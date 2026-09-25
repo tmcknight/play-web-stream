@@ -91,7 +91,7 @@ def test_window_outlives_the_origins_own():
 
 
 def test_each_playlist_keeps_its_own_window():
-    """A master's video and audio renditions both arrive through /pl/."""
+    """Video and audio renditions both come through /pl/ and must not merge."""
     video, audio = "https://o.x/a/v.m3u8", "https://o.x/a/en.m3u8"
     accumulate(POLL % (10, "v1.ts"), video)
     assert names(accumulate(POLL % (10, "a1.aac"), audio)) == ["a1.aac"]
@@ -105,10 +105,10 @@ def test_windows_are_capped():
 
 
 def test_origin_restart_is_spliced_on_rather_than_dropped():
-    """The origin's sequence drops from 497 to 64 and the encoder begins again.
+    """The origin's sequence drops from 497 to 64 when the encoder restarts.
 
-    Numbered by the origin's sequence the fresh segments sort below the ones already
-    held, so the trim deleted them on arrival and the playlist never advanced again.
+    Numbered by the origin's sequence, the new segments sorted below the held ones, the
+    trim deleted them on arrival, and the playlist stopped advancing.
     """
     for seq in (495, 496, 497):
         accumulate(POLL % (seq, "old%d.ts" % seq), MEDIA)
@@ -129,7 +129,8 @@ def test_sequence_never_goes_backwards_across_a_restart():
 
 
 def test_an_older_copy_of_the_playlist_is_not_a_restart():
-    """Origins re-serve a stale playlist; only new segments behind us mean a restart."""
+    """Origins re-serve stale playlists; only new segments at a lower sequence mean a
+    restart."""
     for seq in (10, 11, 12):
         accumulate(POLL % (seq, "s%d.ts" % seq), MEDIA)
     current = accumulate(POLL % (12, "s12.ts"), MEDIA)
@@ -138,11 +139,11 @@ def test_an_older_copy_of_the_playlist_is_not_a_restart():
 
 
 def test_a_poll_past_everything_held_replaces_the_window():
-    """Nobody asked for the playlist for longer than the origin keeps a segment.
+    """No one polled for longer than the origin keeps a segment.
 
-    Splicing the fresh segments onto the stale ones numbered them consecutively with
-    nothing to say the timeline jumps between them, and an Apple TV that started
-    inside the stale part ended the item at the jump. The stale part goes.
+    Splicing new segments onto stale ones numbered them consecutively with no sign of
+    the time jump, and an Apple TV that started in the stale part stopped at the jump.
+    So the stale part is dropped.
     """
     for seq in (10, 11, 12):
         accumulate(POLL % (seq, "s%d.ts" % seq), MEDIA)
@@ -161,8 +162,8 @@ def dates(text):
 
 
 def test_a_playlist_without_dates_is_given_them():
-    """A live playlist carrying no dates leaves a player nothing to build a timeline
-    on, and the AirPlay hand-off announces that it is interested in date ranges."""
+    """Without dates a player has no timeline, and the AirPlay hand-off asks for date
+    ranges."""
     merged = accumulate(POLL % (10, "a.ts"), MEDIA)
     assert len(dates(merged)) == 1
     assert dates(merged)[0].endswith("Z")
@@ -177,7 +178,7 @@ def test_dates_advance_by_each_segment_s_own_duration():
 
 
 def test_a_segment_keeps_the_date_it_was_first_given():
-    """A date that moved between reloads would be worse than no date at all."""
+    """A date that moves between reloads is worse than none."""
     first = accumulate(POLL % (10, "a.ts"), MEDIA)
     later = accumulate(POLL % (11, "b.ts"), MEDIA)
     assert dates(later)[0] == dates(first)[0]
@@ -279,7 +280,7 @@ def test_nothing_is_dug_out_of_what_has_no_media_in_it(data):
 
 
 def test_one_stray_sync_byte_is_not_a_shim():
-    """Twenty packets at their exact spacing is the evidence; one 0x47 is not."""
+    """Detection needs twenty packets at exact spacing, not one 0x47."""
     assert media_offset(b"junk" + b"\x47" + b"\x00" * 4000) == 0
 
 
@@ -301,7 +302,7 @@ def test_a_shim_beyond_the_search_window_is_left_alone():
     ("bytes=0-99", 0, None),                # nothing to cut
     ("bytes=-0", 1000, None),
     ("items=0-99", 1000, None),             # not a byte range
-    ("bytes=0-99, 200-299", 1000, None),    # multipart: the whole body is a fair answer
+    ("bytes=0-99, 200-299", 1000, None),    # multipart: serve the whole body
     ("", 1000, None),
     (None, 1000, None),
 ])

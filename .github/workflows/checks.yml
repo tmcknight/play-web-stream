@@ -10,8 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The proxy is stdlib-only and is dropped onto whatever a machine already has,
-        # so the range it claims to run on is the range that gets tested.
+        # The proxy is stdlib-only and runs on whatever Python a machine has, so every
+        # version it supports is tested.
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7

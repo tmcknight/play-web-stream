@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 """A LAN web front end for the stream resolver: paste a page URL, get a playable one.
 
-This is the skill's manual sequence with the human taken out of it -- discover, probe,
-start the proxy if the stream needs one, hand back the URL. It is meant to run on a
-box that shares the household's egress IP, so origins see the same address they would
-have seen had the Mac fetched the stream itself -- or, with PWS_EGRESS_PROXY set, an
-address belonging to whatever the proxy exits from instead (see `check_egress`).
+Runs the skill's sequence automatically: discover, probe, start the proxy if needed,
+return the URL. Run it on a box that shares the household's egress IP, so origins see
+the address the Mac would have used. With PWS_EGRESS_PROXY set, they see the proxy's
+exit address instead (see `check_egress`).
 
 It binds all interfaces so phones and Apple TVs on the LAN can reach it, and refuses
 clients outside private address space. Do not put it behind a public hostname or a
-tunnel: that turns it into an open relay for other people's video.
+tunnel: that makes it an open relay for other people's video.
 
-There is deliberately no remote-access feature here. Reaching it from another network
-is the operator's own business, and whatever carries it lands in front of the same
-checks: the address, the name, and the stricter test on the hand-off below.
+There is no remote-access feature. Anything that forwards traffic here from another
+network still meets the same checks: address, Host name, and the AirPlay test below.
 
-The socket address is only half of who is asking, though -- see `known_host()` and
-`_gate()`, which establish that the page driving that client is ours as well.
+`known_host()` and `_gate()` also check that the page driving the client is ours.
 
-The AirPlay hand-off is held to a stricter test again, see `_local_client()`. It is
-server-initiated, so a viewer who is not in the house would be starting playback on a
-television here using our network position, and anything forwarded to us arrives on
-loopback, which passes the private-address check like anyone else.
+AirPlay routes need `_local_client()`. The hand-off is server-initiated, so a remote
+viewer would be starting playback on a TV here from our network position. Forwarded
+traffic arrives on loopback, which passes the private-address check.
 
     python3 webapp.py [--port 8786] [--bind 0.0.0.0]
 """
@@ -74,10 +70,10 @@ def tail(path, limit=120, needle=None):
 
 
 def live_states():
-    """The proxies actually serving, as their own state files describe them.
+    """The proxies currently serving, read from their state files.
 
-    A state file outlives a proxy that died badly, so every one of them is checked
-    against a live process before it counts.
+    A state file outlives a proxy that crashed, so each is checked against a live
+    process.
     """
     out = []
     for path in hls_proxy.state_files():
@@ -94,11 +90,10 @@ def live_states():
 def capacity():
     """How many streams may run at once, and how many do.
 
-    Each stream is a proxy of its own on a port of its own, taken at runtime. Under
-    bridge networking those ports have to be published before anything binds them, so
-    the range is settled at deploy time and the app has to be told where it ends --
-    otherwise the stream past the end starts happily inside the container and is simply
-    unreachable, which reads as a broken stream rather than a full house.
+    Each stream is its own proxy on its own port. Under bridge networking the port
+    range is published at deploy time, so the app needs to know where it ends.
+    Otherwise a stream past the end starts inside the container, is unreachable, and
+    looks broken when the real problem is that every slot is taken.
     """
     first = opts.proxy_port or hls_proxy.DEFAULT_PORT
     last = opts.proxy_port_last
@@ -109,8 +104,8 @@ def capacity():
 def start_proxy(source, referer, handshake="python"):
     """Start hls_proxy for this source, or hand back the one already serving it.
 
-    The child is detached, so restarting this app does not kill streams people are
-    watching, and its own idle timeout still ends it when nobody is.
+    The child is detached so restarting this app does not kill streams in use. Its
+    idle timeout ends it.
     """
     running = hls_proxy.existing_instance(source)
     if running:
@@ -140,9 +135,8 @@ def start_proxy(source, referer, handshake="python"):
     if opts.proxy_port_last:
         cmd += ["--port-last", str(opts.proxy_port_last)]
 
-    # 0600 like the state file beside it: the log prints the serving URL, and that
-    # URL carries the token. The directory already keeps other accounts out; this
-    # means the file does not depend on the directory to do it.
+    # 0600 like the state file: the log prints the serving URL, which carries the
+    # token. The directory is already private; this does not rely on it.
     log = log_path(source)
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
@@ -165,11 +159,10 @@ def start_proxy(source, referer, handshake="python"):
 
 
 def running_streams(host="", local=True):
-    """The streams in flight, as the asking client is allowed to see them.
+    """The running streams, filtered for the client asking.
 
-    A client that may not work the AirPlay controls is not told which receivers a
-    stream went to either -- the device names are the same thing _local_client()
-    withholds from GET /api/airplay.
+    A client that fails _local_client() is not shown which receivers a stream went to,
+    for the same reason GET /api/airplay hides device names from it.
     """
     casts = airplay.status() if local else {}
     out = []
@@ -199,10 +192,10 @@ def stop_stream(source):
 
 
 def lan_network(address):
-    """The /24 around an address -- the LAN anything reachable from it sits on.
+    """The /24 around an address, taken as its LAN.
 
-    None when the address admits no such network: a hostname, or IPv6, where a /24
-    means nothing. Callers read that as "no client can be shown to be local".
+    None for a hostname or IPv6, where a /24 means nothing. Callers treat None as
+    "no client counts as local".
     """
     try:
         addr = ipaddress.ip_address(address or "")
@@ -227,16 +220,14 @@ def host_allowlist(raw):
 def known_host(host_header):
     """Whether this Host is a name we answer to.
 
-    The socket address establishes that the client is on a network we serve. It says
-    nothing about the page driving that client: a site that points its own name at our
-    address gets a browser that passes `_private_client()` -- and `_local_client()`
-    too, since the browser is the phone in the room -- and reads every reply, because
-    it still believes it is talking to that site. So the name has to be recognised as
-    well as the address.
+    The socket address shows the client is on a network we serve, but not which page
+    is driving it. A site that points its own name at our address (DNS rebinding) gets
+    a browser that passes `_private_client()` and `_local_client()`, and can read every
+    reply because the browser thinks it is talking to that site.
 
-    An address is safe by construction: there is no name to repoint. So is a name whose
-    DNS we serve ourselves, which is what `--allow-hosts` is for. Everything else is
-    refused, and that is the whole defence -- the attack needs a name to work with.
+    A bare address has no name to repoint, so it is safe. So is a name whose DNS we
+    serve ourselves (`--allow-hosts`). Every other name is refused, since the attack
+    needs one.
     """
     name = hostname_of(host_header)     # already lowercased, and bracketed for IPv6
     if not name:
@@ -253,11 +244,9 @@ def known_host(host_header):
 def localize(url, host_header):
     """Point a playback URL at whatever address the client used to reach this app.
 
-    A client that reached us by a name, or on localhost from the box itself, has no
-    use for a URL naming the LAN address. The proxies already rewrite their own
-    playlists from the request's Host header, so pointing the client at the right host
-    is all that is left, on the assumption that the port numbers are unchanged. An
-    origin URL is left alone: it is not ours.
+    A client that used a name, or localhost on the box itself, cannot use a URL with
+    the LAN address. The proxies rewrite their playlists from the Host header, so only
+    the host needs changing; ports are assumed unchanged. Origin URLs are left alone.
     """
     if not url or not host_header:
         return url
@@ -272,12 +261,10 @@ def localize(url, host_header):
 # --------------------------------------------------------------------------- qr
 
 def qr_svg(data):
-    """An inline QR for the playback URL -- nobody is typing a tokenised path by hand.
+    """An inline QR for the playback URL, so nobody types a tokenised path.
 
-    Dark modules on white, in both of the page's themes. It used to be drawn light on
-    the dark card, which is an inverted code, and a good many phone cameras will not
-    read one. The border is the four-module quiet zone the standard asks for, since
-    the white patch it paints is the only margin the code has.
+    Dark on white in both themes: many phone cameras cannot read an inverted code. The
+    border is the standard four-module quiet zone, and the only margin the code has.
     """
     try:
         import segno
@@ -302,9 +289,9 @@ _egress_lock = threading.Lock()
 def egress_status(refresh=False):
     """What the UI is told about where our upstream fetches leave from.
 
-    The address is looked up through the proxy, which is a real round trip, so it is
-    held for a couple of minutes: the page asks on every load and the answer changes
-    only when the tunnel does. `refresh` is the button that says ask again now.
+    Looking up the address costs a round trip through the proxy, and the page asks on
+    every load, so the answer is cached for EGRESS_TTL seconds. `refresh` forces a new
+    lookup.
     """
     with _egress_lock:
         fresh = _egress["report"] is not None and time.time() - _egress["at"] < EGRESS_TTL
@@ -340,16 +327,13 @@ class Handler(BaseHTTPRequestHandler):
     def _local_client(self):
         """LAN-attached, as opposed to merely private.
 
-        Handing a stream to a television touches something in this house, so it wants
-        a stronger signal than _private_client(). Anything forwarded to us arrives from
-        loopback, exactly as the server's own browser does; the two are
-        indistinguishable, so treat loopback as the untrusted case. Losing the button on
-        the box running the app costs nothing -- that is not the machine anyone is
-        holding in front of the TV.
+        Starting playback on a TV in the house needs more than _private_client().
+        Forwarded traffic arrives on loopback, the same as the server's own browser, so
+        loopback is refused. Nobody controls the TV from the server box anyway.
 
-        What carries the weight is the subnet test: the client is on the LAN we
-        advertise, which is the LAN the receiver is on. That also rules out a VPN peer
-        or a routed guest network arriving from some other RFC1918 range.
+        The main test is the subnet: the client must be on the advertised LAN, where
+        the receiver is. That also excludes VPN peers and routed guest networks on
+        other RFC1918 ranges.
         """
         network = lan_network(advertised)
         if network is None:
@@ -365,9 +349,8 @@ class Handler(BaseHTTPRequestHandler):
     def _gate(self):
         """What every request passes before a route sees it.
 
-        Three separate things are being established, which is why it is three checks
-        and not one: the client is on a network we serve, it reached us by a name we
-        answer to, and no other site is the one driving it.
+        Three checks: the client is on a network we serve, it used a name we answer
+        to, and no other site is driving it.
         """
         if not self._private_client():
             self._send(403, "LAN clients only.\n", "text/plain")
@@ -377,9 +360,8 @@ class Handler(BaseHTTPRequestHandler):
                             "hostname you use in PWS_ALLOW_HOSTS.\n", "text/plain")
             return False
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            # The browser telling us another site asked for this. No page but ours has
-            # any business driving these routes, and the one that would carry -- GET
-            # /api/resolve -- is a "simple" request CORS lets through without asking.
+            # Another site sent this request. GET /api/resolve is a "simple" request
+            # that CORS allows without a preflight, so it has to be refused here.
             self._send(403, "Cross-site requests are refused.\n", "text/plain")
             return False
         return True
@@ -387,15 +369,12 @@ class Handler(BaseHTTPRequestHandler):
     def _handoff_url(self, payload):
         """What to hand a receiver for the stream this request names, or None.
 
-        The receiver fetches the media itself, which decides both halves of this. The
-        playlist, not the page: what the proxy advertises is an HTML player for Safari
-        to open, and a receiver would make nothing of it. And the advertised address,
-        not the localized one, since the fetch comes from across the LAN rather than
-        from the client that asked.
+        The receiver fetches the media itself. So it gets the playlist, because the
+        proxy's main URL is an HTML player page for Safari. And it gets the advertised
+        address, because the fetch comes from across the LAN.
 
-        A stream that needed no proxy has no instance to look up, so the URL travels
-        with the request. It is the origin's, which is where Safari would have sent
-        the receiver too -- the whole reason no proxy was needed.
+        A stream that needed no proxy has no instance, so its origin URL comes with the
+        request. Safari would have sent the receiver there too.
         """
         state = hls_proxy.existing_instance(payload.get("source", ""))
         if state:
@@ -419,11 +398,10 @@ class Handler(BaseHTTPRequestHandler):
     def _client_gone(self):
         """Whether the far end of this connection has closed it.
 
-        Asked rather than waited for, because a write to a socket the peer has closed
-        usually succeeds -- it lands in our buffer and the peer's reset comes back
-        afterwards -- so a failed write finds out one event late, and the event that
-        matters is the one before a proxy is started. The page sends nothing after its
-        GET, so a readable socket here is an end of file or a reset.
+        Checked directly because a write to a closed socket usually succeeds (it lands
+        in our buffer and the reset comes later). A failed write would notice one event
+        late, and the event that matters is the one before a proxy starts. The page
+        sends nothing after its GET, so a readable socket means EOF or a reset.
         """
         try:
             readable, _, _ = select.select([self.connection], [], [], 0)
@@ -461,13 +439,10 @@ class Handler(BaseHTTPRequestHandler):
             needle = "[player]" if (query.get("player") or ["1"])[0] == "1" else None
             self._json(200, {"lines": tail(log_path(source), 60, needle)})
         elif parts.path == "/api/egress":
-            # Cached, because it costs an upstream round trip and the answer only
-            # changes when the tunnel does. The UI asks for it on every page load.
             self._json(200, egress_status(refresh=(query.get("refresh") or ["0"])[0] == "1"))
         elif parts.path == "/api/airplay":
-            # Off for a non-local client, rather than confirming to a remote one that
-            # there is a paired receiver here. ui.html already renders the control on
-            # this flag, so the UI follows with no client-side logic.
+            # Report "unavailable" to non-local clients so a remote one cannot learn
+            # there is a paired receiver here. ui.html hides the control on this flag.
             if not self._local_client():
                 self._json(200, {"available": False, "sessions": {}, "receivers": []})
             else:
@@ -508,8 +483,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._json(200, airplay.start(source, url, receiver))
             except Exception as exc:                              # noqa: BLE001
-                # With the receiver named, so a television that pairs and then refuses
-                # the hand-off is reported against itself rather than against the app.
+                # Name the receiver so a TV that pairs then refuses the hand-off is
+                # blamed, not the app.
                 self._json(200, {"error": str(exc), "receiver": receiver or ""})
         elif path == "/api/airplay/pair":
             if not self._local_client():
@@ -517,8 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.airplay_pair(payload)
         elif path == "/api/airplay/forget":
-            # Held to the same bar as pairing: it edits what this house has on file,
-            # which is not a remote client's to do.
+            # Same check as pairing: it changes the stored credentials.
             if not self._local_client():
                 self._send(403, "AirPlay is for LAN clients only.\n", "text/plain")
                 return
@@ -530,15 +504,13 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found\n", "text/plain")
 
-    # -- the AirPlay picker, and the pairing the PIN splits into two requests
+    # -- the AirPlay picker, and two-request pairing
 
     def airplay_receivers(self, scan):
         """What the picker needs: the feature, the receivers, and what is playing.
 
-        A sweep only when asked. It is 254 probes and the better part of a minute, so
-        it is a button rather than something a page load falls into -- and it needs an
-        advertised IPv4 address to know which /24 to look at, which is the same thing
-        `_local_client` needed to let this request through at all.
+        Sweeps only when asked: 254 probes take most of a minute. The sweep needs an
+        advertised IPv4 address to pick the /24, as `_local_client` does.
         """
         answer = {"available": airplay.available(), "error": ""}
         if scan:
@@ -558,9 +530,9 @@ class Handler(BaseHTTPRequestHandler):
     def airplay_pair(self, payload):
         """Begin or finish a pairing, or drop one nobody finished.
 
-        Two requests, because the receiver shows its PIN only once pairing has begun:
-        the handler stays alive between them inside `airplay`, and times out on its own
-        so an abandoned attempt does not wedge the next.
+        Two requests, because the receiver shows its PIN only after pairing begins.
+        `airplay` keeps the handler alive between them and times it out so an abandoned
+        attempt does not block the next.
         """
         action = payload.get("action", "")
         try:
@@ -573,11 +545,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(400, {"error": "action must be begin, finish or cancel"})
         except Exception as exc:                                  # noqa: BLE001
-            # The UI shows this string, so it arrives as a normal answer -- a receiver
-            # that will not pair is news, not a server fault.
+            # A 200, because a receiver that will not pair is not a server fault. The UI
+            # shows the string.
             self._json(200, {"error": str(exc)})
 
-    # -- the one slow route
+    # -- the slow route
 
     def resolve_stream(self, url, allow_browser):
         """Streamed as events, because the browser fallback can take half a minute."""
@@ -591,10 +563,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        # Cancel on the page closes the event stream, and that is all it can do. Without
-        # this the resolve carried on regardless and started a proxy for a stream
-        # nobody was waiting for, which then turned up under Running a moment after
-        # the person had said no. Every stage is a chance to notice and stop.
+        # Cancel on the page only closes the event stream. Without this check the
+        # resolve went on and started a proxy nobody wanted, which then appeared under
+        # Running. Each stage checks and stops.
         def progress(message):
             if self._client_gone():
                 raise ClientGone()
@@ -637,9 +608,9 @@ def env_int(name, fallback=None):
 def check_advertised(address):
     """Shout if the address we are about to hand out is one no Apple TV can reach.
 
-    Inside a bridge-networked container `lan_ip()` reports the container's own address
-    on the docker bridge. Everything looks healthy and nothing ever plays, because the
-    receiver fetches the media URL itself -- so this is worth failing loudly over.
+    In a bridge-networked container `lan_ip()` returns the container's docker bridge
+    address. Everything looks healthy but nothing plays, because the receiver fetches
+    the media URL itself.
     """
     if not os.path.exists("/.dockerenv"):
         return
@@ -657,10 +628,9 @@ def check_advertised(address):
 def check_handoff_reach(address):
     """Shout when the AirPlay controls will be off for everybody.
 
-    _local_client() wants the client on the LAN we advertise. Under bridge networking
-    every client arrives as the docker gateway instead, which is in no such subnet, so
-    the AirPlay controls quietly switch themselves off for the whole house. That is the
-    safe direction to fail in, but from the outside it looks like a bug.
+    _local_client() requires the client on the advertised LAN. Under bridge networking
+    every client arrives as the docker gateway, outside that subnet, so the AirPlay
+    controls disappear for everyone. Safe, but it looks like a bug.
     """
     if not airplay.available():
         return
@@ -689,15 +659,12 @@ def check_handoff_reach(address):
 def probe_receivers():
     """Probe what we remember, once, while the server is coming up.
 
-    Two things come of it. The addresses in the file are proved or disproved before
-    anybody asks, so the first page load reads a warm cache instead of waiting out a
-    scan; and the boot log says which televisions answered, which is where a redeploy
-    that lost its credentials or a receiver that moved becomes visible without anyone
-    opening the UI.
+    The first page load then reads a warm cache instead of waiting for a scan, and the
+    boot log lists which TVs answered. That shows lost credentials after a redeploy, or
+    a receiver that moved, without opening the UI.
 
-    In a thread, because a scan is `SCAN_TIMEOUT` of waiting and nothing should hold
-    the listener shut for that long. Failures are reported and dropped: a scan is not
-    a reason to refuse to serve.
+    Runs in a thread because a scan waits up to `SCAN_TIMEOUT`. Failures are logged and
+    ignored; a failed scan is no reason to stop serving.
     """
     if not airplay.available():
         return
@@ -715,10 +682,9 @@ def probe_receivers():
 def check_egress():
     """Say at startup where upstream fetches are leaving from, and shout if nowhere.
 
-    A proxy that is set and unreachable fails closed on its own -- every upstream fetch
-    goes through it and every one of them errors -- so this does not refuse to start.
-    What it prevents is the quieter version: a tunnel believed to be up, a probe that
-    never happened, and no line anywhere saying which address the origins are seeing.
+    An unreachable proxy already fails closed (every upstream fetch errors), so this
+    does not stop startup. It makes sure the log says which address origins see, so a
+    tunnel assumed to be up can be checked.
     """
     report = egress_status()
     if not report["enabled"]:

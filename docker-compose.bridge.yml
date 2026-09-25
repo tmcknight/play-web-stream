@@ -1,13 +1,12 @@
-# Bridge networking instead of host, for a machine where host mode is unavailable or
-# unwanted -- Docker Desktop, or a host where the network namespace matters.
+# Bridge networking instead of host, for Docker Desktop or a host where host mode is
+# unavailable or unwanted.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d --build
 #
-# Two things have to be spelled out that host mode gets for free: the address the
-# playback URLs carry, since inside the container `lan_ip()` only sees the docker
-# bridge; and the whole proxy port range, since each stream takes the next free port
-# at runtime. Move the range with PWS_PROXY_PORT / PWS_PROXY_PORT_LAST if something
-# on the host already holds it.
+# Host mode provides two things that must be set by hand here. The address in playback
+# URLs, because inside the container `lan_ip()` only sees the docker bridge. And the
+# whole proxy port range, because each stream takes the next free port at runtime. Move
+# the range with PWS_PROXY_PORT / PWS_PROXY_PORT_LAST if something on the host holds it.
 
 services:
   play-web-stream:
@@ -15,17 +14,16 @@ services:
     ports:
       - "${PWS_PORT:-8786}:${PWS_PORT:-8786}"
       - "${PWS_PROXY_PORT:-8787}-${PWS_PROXY_PORT_LAST:-8806}:${PWS_PROXY_PORT:-8787}-${PWS_PROXY_PORT_LAST:-8806}"
-      # AirPlay's timing callback. The receiver connects back to us, so this one has
-      # to be reachable; it is pinned for that reason rather than left ephemeral.
+      # AirPlay's timing callback. The receiver connects back to us, so the port is
+      # pinned and published instead of ephemeral.
       - "${PWS_AIRPLAY_TIMING_PORT:-49170}:${PWS_AIRPLAY_TIMING_PORT:-49170}/udp"
     environment:
       PWS_PORT: "${PWS_PORT:-8786}"
       PWS_PROXY_PORT: "${PWS_PROXY_PORT:-8787}"
-      # The same number docker publishes above. The app holds itself to it,
-      # so a stream is refused with a reason rather than served on a port
-      # outside the published range.
+      # Must match the range published above. The app enforces it, so a stream beyond
+      # the range is refused with a reason instead of served on an unpublished port.
       PWS_PROXY_PORT_LAST: "${PWS_PROXY_PORT_LAST:-8806}"
       PWS_ADVERTISE_IP: "${PWS_ADVERTISE_IP:?set it to this host's LAN address}"
       PWS_AIRPLAY_TIMING_PORT: "${PWS_AIRPLAY_TIMING_PORT:-49170}"
-      # PTP, then NTP if the receiver refuses it. tvOS 26.5 and later go quiet on NTP.
+      # PTP, then NTP if the receiver refuses it. tvOS 26.5 and later ignore NTP.
       PWS_AIRPLAY_TIMING: "${PWS_AIRPLAY_TIMING:-auto}"

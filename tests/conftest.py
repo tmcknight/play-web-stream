@@ -1,8 +1,7 @@
 """Fixtures: the repo on the path, a fake origin, and a real proxy subprocess.
 
-The proxy is run the way the web app runs it -- as a detached child, read back through
-its log -- rather than imported, because half of what is worth testing is how it
-behaves on the wire.
+The proxy runs as a detached child, as the web app runs it, and is read back through its
+log. Much of what needs testing is how it behaves on the wire.
 """
 
 import json
@@ -32,10 +31,9 @@ START_TIMEOUT = 30
 def remembered_receivers(tmp_path, monkeypatch):
     """Point the remembered-receivers file somewhere disposable, for every test.
 
-    Autouse and unconditional, because the default is a real path in the runner's home
-    and `airplay` writes to it whenever a scan turns up a paired receiver. A test that
-    fakes a television must not put that television in the file a real deployment on
-    this machine then reads back.
+    The default is a real path in the runner's home, and `airplay` writes to it whenever
+    a scan finds a paired receiver. A fake television must not end up in the file a real
+    deployment on this machine reads.
     """
     monkeypatch.setattr(airplay, "REMEMBERED", str(tmp_path / "receivers.json"))
     monkeypatch.setattr(airplay, "_remembered", None)
@@ -44,7 +42,7 @@ def remembered_receivers(tmp_path, monkeypatch):
 def http(url, headers=None, method="GET", data=None):
     """Fetch without raising on a 4xx, since the status is usually the assertion.
 
-    `data` is a JSON body, which is the only kind the web app's POST routes take.
+    `data` is a JSON body; the web app's POST routes take nothing else.
     """
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
@@ -87,7 +85,7 @@ def origin():
 
 @pytest.fixture
 def start_proxy(tmp_path):
-    """Launch proxies, tearing every one of them down afterwards."""
+    """Launch proxies and tear them all down afterwards."""
     running = []
 
     def start(source, referer=None, *args):
@@ -98,7 +96,7 @@ def start_proxy(tmp_path):
             cmd += ["--referer", referer]
         cmd += [str(a) for a in args]
 
-        handle = open(log, "wb")        # noqa: SIM115 -- outlives this scope, with the child
+        handle = open(log, "wb")        # noqa: SIM115 (lives as long as the child)
         proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT, cwd=str(ROOT))
         running.append((proc, handle, source))
 
