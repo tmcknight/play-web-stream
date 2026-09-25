@@ -281,6 +281,13 @@ def qr_svg(data):
 # --------------------------------------------------------------------------- serving
 
 EGRESS_TTL = 120
+# A failure is held only briefly. The usual one is a tunnel still connecting, and
+# holding it for EGRESS_TTL showed the page an error for two minutes after it came up.
+EGRESS_RETRY_TTL = 10
+# How long startup waits for the tunnel before warning. Gluetun takes a while to
+# connect and resolve over DoT, and the Portainer stack starts both at once.
+EGRESS_STARTUP_WAIT = 90
+EGRESS_STARTUP_INTERVAL = 5
 
 _egress = {"at": 0.0, "report": None}
 _egress_lock = threading.Lock()
@@ -290,11 +297,13 @@ def egress_status(refresh=False):
     """What the UI is told about where our upstream fetches leave from.
 
     Looking up the address costs a round trip through the proxy, and the page asks on
-    every load, so the answer is cached for EGRESS_TTL seconds. `refresh` forces a new
-    lookup.
+    every load, so the answer is cached for EGRESS_TTL seconds, or EGRESS_RETRY_TTL if
+    it was a failure. `refresh` forces a new lookup.
     """
     with _egress_lock:
-        fresh = _egress["report"] is not None and time.time() - _egress["at"] < EGRESS_TTL
+        report = _egress["report"]
+        ttl = EGRESS_RETRY_TTL if report and report["error"] else EGRESS_TTL
+        fresh = report is not None and time.time() - _egress["at"] < ttl
         if fresh and not refresh:
             return _egress["report"]
     report = hls_proxy.egress_check()
@@ -685,15 +694,27 @@ def check_egress():
     An unreachable proxy already fails closed (every upstream fetch errors), so this
     does not stop startup. It makes sure the log says which address origins see, so a
     tunnel assumed to be up can be checked.
+
+    A tunnel starting beside the app is normally still connecting, so a failure is
+    retried for EGRESS_STARTUP_WAIT seconds before it is reported as a fault.
     """
     report = egress_status()
     if not report["enabled"]:
         return
+    deadline = time.time() + EGRESS_STARTUP_WAIT
     if report["error"]:
-        sys.stderr.write("WARNING: the egress proxy %s did not answer: %s\n"
+        sys.stderr.write("play-web-stream: waiting for the egress proxy %s (%s)\n"
+                         % (report["proxy"], report["error"]))
+    while report["error"] and time.time() < deadline:
+        time.sleep(EGRESS_STARTUP_INTERVAL)
+        report = egress_status(refresh=True)
+    if report["error"]:
+        sys.stderr.write("WARNING: the egress proxy %s did not answer within %ds: %s\n"
                          "         Upstream fetches will fail until it does; nothing "
                          "falls back to this network's own address.\n"
-                         % (report["proxy"], report["error"]))
+                         "         Check the tunnel's own log (docker logs "
+                         "play-web-stream-vpn).\n"
+                         % (report["proxy"], EGRESS_STARTUP_WAIT, report["error"]))
         return
     sys.stderr.write("play-web-stream: upstream via %s -- origins see %s\n"
                      % (report["proxy"], report["ip"] or "an address it would not say"))

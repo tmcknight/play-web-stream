@@ -1386,6 +1386,19 @@ if (matchMedia("(pointer: fine)").matches && $("tvsView").hidden) $("url").focus
 // Where upstream fetches leave from. Shown on the page, not only in the log, because
 // otherwise the viewer cannot tell whether the origin sees their tunnel, and a tunnel
 // that has stopped looks the same as one that works.
+//
+// A failure is checked again every EGRESS_RECHECK ms. The usual cause is a VPN still
+// connecting after a restart, and a page that asked once kept showing the error after
+// the tunnel came up.
+const EGRESS_RECHECK = 15000;
+let egressTimer = null;
+
+function checkEgress() {
+  clearTimeout(egressTimer);
+  return fetch("/api/egress").then(r => r.json()).then(showEgress)
+    .catch(() => { egressTimer = setTimeout(checkEgress, EGRESS_RECHECK); });
+}
+
 function showEgress(e) {
   const el = $("egress");
   if (!e || !e.enabled) return;
@@ -1393,8 +1406,10 @@ function showEgress(e) {
   if (e.error) {
     el.className = "warn";
     el.innerHTML = withIcon("exclamation-triangle",
-      `The privacy proxy ${e.proxy} is not answering (${e.error}). `
-      + "Nothing will be found until it does.");
+      `The privacy proxy ${e.proxy} is not answering yet (${e.error}). If the VPN has `
+      + "just started it may still be connecting; this checks again every 15 seconds. "
+      + "Nothing will be found until it answers.");
+    egressTimer = setTimeout(checkEgress, EGRESS_RECHECK);
     return;
   }
   el.className = "note";
@@ -1405,7 +1420,7 @@ function showEgress(e) {
 }
 
 Promise.allSettled([
-  fetch("/api/egress").then(r => r.json()).then(showEgress),
+  checkEgress(),
   // No sweep on load. Named receivers are a few cached unicast probes; sweeping the
   // /24 (254 probes) is left to the button on the TVs screen.
   refreshAirplay(false),

@@ -227,6 +227,58 @@ def test_the_egress_address_is_held_rather_than_asked_on_every_page_load(app,
     assert len(asked) == 2
 
 
+def test_a_failed_egress_check_is_asked_again_soon(app, unasked_egress, monkeypatch):
+    """A tunnel still connecting must not show as down for the whole cache lifetime."""
+    asked = []
+    report = {"enabled": True, "proxy": "http://gluetun:8888", "forced": True,
+              "ip": "", "error": "URLError: timed out"}
+    monkeypatch.setattr(hls_proxy, "egress_check",
+                        lambda *a, **kw: (asked.append(1), report)[1])
+
+    conftest.http(app + "/api/egress")
+    conftest.http(app + "/api/egress")
+    assert len(asked) == 1
+
+    webapp._egress["at"] -= webapp.EGRESS_RETRY_TTL + 1
+    conftest.http(app + "/api/egress")
+    assert len(asked) == 2
+
+
+def test_startup_waits_for_a_tunnel_that_is_still_connecting(unasked_egress, monkeypatch,
+                                                             capsys):
+    """Gluetun connecting beside the app is not a fault, so it is not reported as one."""
+    answers = iter([{"error": "URLError: timed out", "ip": ""},
+                    {"error": "URLError: timed out", "ip": ""},
+                    {"error": "", "ip": "203.0.113.7"}])
+    base = {"enabled": True, "proxy": "http://gluetun:8888", "forced": True}
+    monkeypatch.setattr(hls_proxy, "egress_check",
+                        lambda *a, **kw: dict(base, **next(answers)))
+    monkeypatch.setattr(webapp.time, "sleep", lambda _s: None)
+
+    webapp.check_egress()
+
+    err = capsys.readouterr().err
+    assert "waiting for the egress proxy" in err
+    assert "origins see 203.0.113.7" in err
+    assert "WARNING" not in err
+
+
+def test_startup_warns_about_a_tunnel_that_never_answers(unasked_egress, monkeypatch,
+                                                         capsys):
+    report = {"enabled": True, "proxy": "http://gluetun:8888", "forced": True,
+              "ip": "", "error": "URLError: timed out"}
+    monkeypatch.setattr(hls_proxy, "egress_check", lambda *a, **kw: dict(report))
+    clock = [1000.0]
+    monkeypatch.setattr(webapp.time, "time", lambda: clock[0])
+    monkeypatch.setattr(webapp.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    webapp.check_egress()
+
+    err = capsys.readouterr().err
+    assert "did not answer within %ds" % webapp.EGRESS_STARTUP_WAIT in err
+    assert "docker logs play-web-stream-vpn" in err
+
+
 def test_a_loopback_client_is_not_told_there_is_a_receiver(app):
     status, _, body = conftest.http(app + "/api/airplay")
     assert status == 200
