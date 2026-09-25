@@ -17,7 +17,7 @@ KillMode=process
 # Upstream fetches leave through whatever this names, so stream origins see its address
 # rather than this connection's; the LAN is still reached directly. Any HTTP proxy will
 # do -- docker-compose.vpn.yml stands one up on a VPN. Named this way rather than as
-# https_proxy on purpose: see "Hide the address the origin sees" in README.md.
+# https_proxy on purpose: see "Keep your address private" in README.md.
 #Environment=PWS_EGRESS_PROXY=http://127.0.0.1:8888
 
 # Under Docker the container is the boundary. Installed this way there is no

@@ -1,5 +1,7 @@
-# Hide this network's address from the stream origins, by sending every upstream fetch
-# through a VPN and nothing else through it at all.
+# Keep this network's address out of the stream origins' logs, by sending every upstream
+# fetch through a VPN and nothing else through it at all. It changes where requests come
+# from, not what may be watched: a stream that will not play in your own browser will not
+# play through this either.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
 #
@@ -9,7 +11,12 @@
 # address and answer on the LAN -- which `network_mode: service:gluetun` takes away.
 # A proxy splits it by destination instead: origins through the tunnel, the house direct.
 #
-# The wireguard key is Nord's to issue -- `wg genkey` is not it. Nord shows no key in
+# The sidecar is gluetun, which speaks to most commercial providers; VPN_PROVIDER takes
+# any name from its list and defaults to nordvpn. The steps below are Nord's, as the
+# worked example. Other providers issue their wireguard key their own way -- gluetun's
+# wiki has a page for each.
+#
+# Nord's wireguard key is Nord's to issue -- `wg genkey` is not it. Nord shows no key in
 # the dashboard either; it is behind their API, reached with an access token:
 #
 #   1. nordaccount.com -> Services -> NordVPN -> Manual setup -> Set up NordVPN manually
@@ -23,13 +30,18 @@
 #   3. Put it in a .env beside this file (docker compose reads that by itself, and
 #      .gitignore already keeps it out of the repo):
 #
-#        NORD_PRIVATE_KEY=<the key from step 2>
-#        NORD_COUNTRIES=Netherlands
+#        VPN_PROVIDER=nordvpn
+#        VPN_PRIVATE_KEY=<the key from step 2>
+#        VPN_COUNTRIES=<the country you are in>
 #
 #      chmod 600 .env -- it is a credential, and the default umask is not.
 #
-# Under Portainer there is no .env: the same two names go in the stack's own
-# environment variables, where Portainer keeps them.
+#      Pick the exit nearest you. A distant one makes origins slower and more
+#      suspicious, not more permissive, and many tie segment URLs to the address that
+#      asked for the page -- which a tunnel on the far side of the world is not.
+#
+# Under Portainer there is no .env: the same names go in the stack's own environment
+# variables, where Portainer keeps them.
 #
 # OpenVPN with a username and password works too, and skips the API: drop VPN_TYPE and
 # WIREGUARD_PRIVATE_KEY, and set OPENVPN_USER / OPENVPN_PASSWORD to the *service*
@@ -55,10 +67,10 @@ services:
       # anyone on it, and this one has a VPN on the far side of it.
       - "127.0.0.1:8888:8888"
     environment:
-      VPN_SERVICE_PROVIDER: nordvpn
+      VPN_SERVICE_PROVIDER: "${VPN_PROVIDER:-nordvpn}"
       VPN_TYPE: wireguard
-      WIREGUARD_PRIVATE_KEY: "${NORD_PRIVATE_KEY:?set it in .env -- see the header}"
-      SERVER_COUNTRIES: "${NORD_COUNTRIES:-}"
+      WIREGUARD_PRIVATE_KEY: "${VPN_PRIVATE_KEY:?set it in .env -- see the header}"
+      SERVER_COUNTRIES: "${VPN_COUNTRIES:-}"
       # The proxy the app fetches through. Gluetun's kill switch covers it: with the
       # tunnel down it refuses rather than leaks.
       HTTPPROXY: "on"

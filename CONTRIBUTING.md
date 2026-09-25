@@ -49,6 +49,6 @@ the three ignores there are deliberate and explained in place.
 ## What is out of scope
 
 DRM services, DASH, and anything that amounts to circumventing an access control rather
-than correcting a `Content-Type`. See the README's *Scope*. Features that would need the
-app to be safely reachable from the public internet are also out — see `SECURITY.md` for
-why the LAN boundary is load-bearing rather than incidental.
+than correcting a `Content-Type`. See the README's [Scope](README.md#scope). Features
+that would need the app to be safely reachable from the public internet are also out —
+see `SECURITY.md` for why the LAN boundary is load-bearing rather than incidental.

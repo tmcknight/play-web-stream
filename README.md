@@ -131,7 +131,7 @@ python3 -m venv .venv
 | `PWS_ALLOW_ANY` | unset | `1` serves clients outside private address space (don't) |
 | `PWS_ATV_STORAGE` | `/config/pyatv.conf`, or `~/.config/play-web-stream/pyatv.conf` outside a container | AirPlay credentials file |
 | `PWS_RECEIVERS` | beside the credentials | Remembered receiver addresses |
-| `PWS_EGRESS_PROXY` | unset | Send every upstream fetch through this proxy. See [Hide your address](#hide-your-address-from-the-origin) |
+| `PWS_EGRESS_PROXY` | unset | Send every upstream fetch through this proxy. See [Keep your address private](#keep-your-address-private) |
 | `PWS_FORCE_PROXY` | on with `PWS_EGRESS_PROXY` | Proxy streams even when they need no fixing |
 
 Each stream gets its own proxy on its own port, so the published range is the number of
@@ -210,30 +210,37 @@ from link-local Bonjour. `SECURITY.md` has the rest.
 
 ## Which machine to run it on
 
-Run it on a machine that shares the household's egress IP. Origins often geo-lock, and
-pin presigned segments to the requesting address, so a box on the viewer's connection
-sees what the viewer would. A cloud host does not. The proxies it starts are detached, so
+Run it on your home connection. Many origins tie segment URLs to the address that
+requested the page, so the proxy has to fetch from the same place your browser does. A
+cloud host is somewhere else, and gets refused. The proxies it starts are detached, so
 they survive a restart of the unit.
 
-## Hide your address from the origin
+## Keep your address private
 
-To hide the household address instead, give the pipeline a proxy:
+Stream origins and their CDNs log the address of everyone who fetches from them. To keep
+yours out of those logs, send upstream fetches through a proxy:
 
 ```sh
 PWS_EGRESS_PROXY=http://127.0.0.1:8888 python3 webapp.py
 python3 hls_proxy.py --source "<playlist-url>" --egress-proxy http://127.0.0.1:8888
 ```
 
-`docker-compose.vpn.yml` stands one up on NordVPN as a sidecar, with the app outside its
-network:
+This is privacy, not access. It changes where the requests come from, not what you may
+watch: a stream you cannot play in your own browser will not play through this either.
+
+`docker-compose.vpn.yml` stands one up as a sidecar on a commercial VPN, with the app
+outside its network. It uses gluetun, so any provider gluetun supports will do; the
+worked example is NordVPN:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
 ```
 
-Nord's wireguard key comes from their API with an access token, not from the dashboard.
-That compose file's header has the commands and says where the token is issued. The key
-goes in a `.env` beside it, which `.gitignore` already covers.
+`VPN_PROVIDER` names the provider (`nordvpn` if unset), `VPN_PRIVATE_KEY` its wireguard
+key, and `VPN_COUNTRIES` the exit -- the country you are in. Nord's key comes from their
+API with an access token, not from the dashboard; that compose file's header has the
+commands and says where the token is issued. The values go in a `.env` beside it, which
+`.gitignore` already covers.
 
 A sidecar, because Safari and the Apple TV fetch *from* this app over the LAN, so it has
 to keep a LAN address; a VPN namespace takes that away. The split is by destination
@@ -257,7 +264,10 @@ reads as an error rather than leaking the address being hidden. Authenticated pr
 work throughout: Chromium takes no credentials in `--proxy-server`, so the browser
 fallback gets them through Playwright.
 
-## When an origin blocks the fetch
+## When the origin rejects Python's TLS handshake
+
+**This is for streams you can already play in your own browser.** It does nothing for
+DRM, and nothing for a stream the origin would refuse your browser too.
 
 Some origins never read the headers. Python's OpenSSL handshake (cipher list, extension
 order, ALPN set) matches no shipping browser, and a JA3/JA4 hash of it is refused before
@@ -269,8 +279,6 @@ Safari's handshake, matching the `User-Agent` it already sends. If that works, e
 fetch for the stream uses it. Nothing is tried until Python's own handshake is refused.
 `--browser-handshake` starts a proxy that way from the first request, which is what the
 web app does once the resolver has learnt it is needed.
-
-This is for streams you can already play in your own browser. It does nothing for DRM.
 
 ## HTTP API
 
@@ -319,7 +327,12 @@ fine from inside the process.
 CI runs the suite on Python 3.9 through 3.14, and ruff over everything. `CONTRIBUTING.md`
 has the rest: run the checks, keep `hls_proxy.py` on the standard library.
 
-## What it won't play
+## Scope
+
+It corrects a `Content-Type` and re-serves a stream you can already play. It does not
+get around access controls -- logins, paywalls, geo-restrictions, DRM -- and changes
+that would are out of scope, as is anything that needs the app reachable from the public
+internet (see `SECURITY.md`).
 
 DRM streams use Widevine or FairPlay, so the segments are encrypted and re-serving them
 achieves nothing. DASH has no native AirPlay path. Screen mirroring is the answer for

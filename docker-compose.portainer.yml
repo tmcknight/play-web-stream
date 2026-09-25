@@ -20,8 +20,9 @@
 # variables the pair of them want, all in that same box:
 #
 #   COMPOSE_PROFILES=vpn
-#   NORD_PRIVATE_KEY=<44 characters, from Nord's API -- see docker-compose.vpn.yml>
-#   NORD_COUNTRIES=Netherlands
+#   VPN_PROVIDER=nordvpn                 (any gluetun provider; nordvpn if unset)
+#   VPN_PRIVATE_KEY=<your provider's wireguard key -- see docker-compose.vpn.yml>
+#   VPN_COUNTRIES=<the country you are in>
 #   PWS_EGRESS_PROXY=http://gluetun:8888
 #
 # Setting the proxy and forgetting the profile is the one mistake to know about: the
@@ -108,8 +109,8 @@ services:
   # is fetched *from* as much as it fetches -- Safari asks it for segments and an Apple
   # TV goes to it directly -- so it has to keep a LAN address and answer on the LAN,
   # which network_mode: service:gluetun takes away. The split is by destination instead:
-  # origins through the proxy, this network direct. See README, "Hide the address the
-  # origin sees".
+  # origins through the proxy, this network direct. See README, "Keep your address
+  # private".
   gluetun:
     image: qmcgaw/gluetun:v3.40.0
     container_name: play-web-stream-vpn
@@ -124,10 +125,10 @@ services:
     # is published to nothing -- an HTTP proxy on the LAN is an open relay for anyone
     # on it, and this one has a VPN on the far side.
     environment:
-      VPN_SERVICE_PROVIDER: nordvpn
+      VPN_SERVICE_PROVIDER: "${VPN_PROVIDER:-nordvpn}"
       VPN_TYPE: wireguard
-      WIREGUARD_PRIVATE_KEY: "${NORD_PRIVATE_KEY:?set it in Portainer -- see the header}"
-      SERVER_COUNTRIES: "${NORD_COUNTRIES:-}"
+      WIREGUARD_PRIVATE_KEY: "${VPN_PRIVATE_KEY:?set it in Portainer -- see the header}"
+      SERVER_COUNTRIES: "${VPN_COUNTRIES:-}"
       HTTPPROXY: "on"
       HTTPPROXY_LISTENING_ADDRESS: ":8888"
       # Gluetun resolves over the tunnel, so a lookup for an origin does not go to the

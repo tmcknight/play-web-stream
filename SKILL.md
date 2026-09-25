@@ -39,9 +39,9 @@ and checking for `#EXTM3U`. On success it prints the playlist URL **and whether 
 is required**, which also settles step 2:
 
 ```
-page     : https://embed.example/new-stream-embed/56685
-playlist : https://origin.example/playlist/56685/load-playlist
-referer  : https://embed.example/new-stream-embed/56685
+page     : https://embed.example/stream/123
+playlist : https://origin.example/live/123/playlist
+referer  : https://embed.example/stream/123
 ```
 
 Takes a few seconds. Exits 1 if it finds nothing, which means the player is genuinely
@@ -53,7 +53,7 @@ window over whatever the user is watching.
 #### Playwright fallback
 
 **Match on content, not on a `.m3u8` extension.** Playlist URLs frequently have no
-extension at all (`/load-playlist`), or carry query strings, or arrive base64'd in the
+extension at all (`/live/123/playlist`), or carry query strings, or arrive base64'd in the
 player config. An extension regex will miss them.
 
 ```js
@@ -300,9 +300,9 @@ tail -40 /tmp/hls_proxy.log
 The shape to look for, once AirPlay is driving:
 
 ```
-17:41:12 192.168.2.194 "GET /seg/..."      <- receiver fills its buffer
-17:41:14 192.168.2.194 "GET /live.m3u8"    <- then polls...
-17:41:27 192.168.2.194 "GET /live.m3u8"    <- ...and never fetches another segment
+17:41:12 192.168.1.50 "GET /seg/..."      <- receiver fills its buffer
+17:41:14 192.168.1.50 "GET /live.m3u8"    <- then polls...
+17:41:27 192.168.1.50 "GET /live.m3u8"    <- ...and never fetches another segment
 ```
 
 Playlist polls continuing with no segment fetches following them means the receiver is
