@@ -53,7 +53,7 @@
 
 services:
   gluetun:
-    image: qmcgaw/gluetun:v3.40.0
+    image: qmcgaw/gluetun:v3.41.3
     container_name: play-web-stream-vpn
     cap_add:
       - NET_ADMIN
