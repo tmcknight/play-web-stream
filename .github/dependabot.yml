@@ -1,0 +1,31 @@
+# Weekly update PRs. Merging to main deploys: Portainer polls this repo every 5m and
+# rebuilds the stack from docker-compose.portainer.yml.
+version: 2
+updates:
+  # Base image in Dockerfile (pinned by digest).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+
+  # gluetun in docker-compose.vpn.yml / docker-compose.portainer.yml.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+
+  # requirements.txt / requirements-dev.txt. pyatv is pinned on purpose: airplay_protocol.py
+  # uses its private API, so read its changelog before merging that one.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
