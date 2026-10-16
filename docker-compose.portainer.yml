@@ -105,7 +105,7 @@ services:
   # destination instead: origins through the proxy, this network direct. See README,
   # "Keep your address private".
   gluetun:
-    image: qmcgaw/gluetun:v3.40.0
+    image: qmcgaw/gluetun:v3.41.3
     container_name: play-web-stream-vpn
     # Only starts with COMPOSE_PROFILES=vpn, so one file serves stacks with and
     # without a VPN.
