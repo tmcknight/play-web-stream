@@ -69,7 +69,9 @@ television.
 docker compose up -d --build            # http://<this-box>:8786/
 ```
 
-The image bundles Chromium for the browser fallback, so the first build is slow.
+The image bundles Chromium for the browser fallback, so the first build is slow. To skip
+the build, use the published image: `ghcr.io/tmcknight/play-web-stream:<version>` (each
+`v*` tag, amd64 only) in place of `build: .`.
 
 `docker-compose.yml` uses `network_mode: host` so the container can find its own LAN
 address, which the Apple TV needs in the media URL. For bridge networking, supply it:
