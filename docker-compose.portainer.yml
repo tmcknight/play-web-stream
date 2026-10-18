@@ -127,6 +127,10 @@ services:
       # Gluetun resolves DNS over the tunnel, so lookups for origins do not go to the
       # household resolver and reveal what is being watched.
       DOT: "on"
+      # Gluetun's malware blocklist lists many stream embed and CDN hosts, and refuses to
+      # resolve them. Its proxy then answers 503, and the page looks like it has no
+      # stream. The hosts rotate, so an unblock list would need constant upkeep.
+      BLOCK_MALICIOUS: "off"
     restart: unless-stopped
 
 volumes:

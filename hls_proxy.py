@@ -1680,14 +1680,15 @@ def verify_through_gate(url, referer):
     return verify_playlist(url, referer)
 
 
-def discover_through_gate(page_url, referer=None):
+def discover_through_gate(page_url, referer=None, unreachable=None):
     """discover(), and once more as a browser if a client gate stood in the way.
 
     `referer` is only used for the gate probe and defaults to the page itself. Raises
-    Gated when a gate was found and could not be cleared.
+    Gated when a gate was found and could not be cleared. `unreachable`, if given,
+    collects (url, reason) for pages that could not be fetched at all.
     """
     blocked = []
-    found = discover(page_url, blocked=blocked)
+    found = discover(page_url, blocked=blocked, unreachable=unreachable)
     if found:
         return found
     for url in blocked:
@@ -1788,12 +1789,25 @@ def rank_candidates(urls, page_url):
     return [url for _, url in sorted(scored, key=lambda pair: pair[0])]
 
 
-def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
+def unescape_js(text):
+    """Undo the string escapes players write URLs with, such as \\u0026 for "&".
+
+    URL_IN_PAGE stops at a backslash, so an escaped "&" cut the query short and lost
+    every parameter after it, often the token's expiry.
+    """
+    text = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text)
+    return text.replace("\\/", "/")
+
+
+def discover(page_url, depth=2, referer=None, seen=None, blocked=None, unreachable=None):
     """Find the playlist behind a page without a browser.
 
     These pages are server-rendered, so the player config is in the HTML as a URL or a
     base64 blob. Use Playwright only when this finds nothing, which means the player is
     built at runtime.
+
+    A page that cannot be fetched at all goes into `unreachable` as (url, reason). An
+    embed that never loads looks the same as a page with no stream unless it is named.
     """
     seen = seen if seen is not None else set()
     if depth < 0 or page_url in seen:
@@ -1809,12 +1823,16 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
             blocked.append(page_url)
         exc.close()
         return None
+    except (urllib.error.URLError, OSError) as exc:
+        if unreachable is not None:
+            unreachable.append((page_url, str(getattr(exc, "reason", exc))))
+        return None
     except Exception:
         return None
     html = body.decode("utf-8", "replace")
 
     candidates = []
-    for match in URL_IN_PAGE.finditer(html):
+    for match in URL_IN_PAGE.finditer(unescape_js(html)):
         url = match.group(0).rstrip("\\\"'")
         if PLAYLISTY.search(url) and not NOISE.search(url):
             candidates.append(url)
@@ -1856,7 +1874,8 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None):
         src = urllib.parse.urljoin(page_url, match.group(1))
         if NOISE.search(src):
             continue
-        found = discover(src, depth - 1, referer=page_url, seen=seen, blocked=blocked)
+        found = discover(src, depth - 1, referer=page_url, seen=seen, blocked=blocked,
+                         unreachable=unreachable)
         if found:
             return found
 
@@ -1993,12 +2012,19 @@ def main():
         use_browser_handshake()
 
     if opts.discover:
+        unreachable = []
         try:
-            found = discover_through_gate(opts.discover, referer=opts.referer)
+            found = discover_through_gate(opts.discover, referer=opts.referer,
+                                          unreachable=unreachable)
         except Gated as exc:
             report_gate(exc.report, exc.url)
             raise SystemExit(2) from None
         if not found:
+            for url, reason in unreachable:
+                print("unreachable: %s (%s)" % (url, reason))
+            if unreachable and egress_proxy():
+                print("fetches go via %s; a 503 from it usually means its DNS refused "
+                      "the host." % egress_label())
             print("no playlist found in the page HTML.")
             print("the player is probably built at runtime -- fall back to Playwright.")
             raise SystemExit(1)

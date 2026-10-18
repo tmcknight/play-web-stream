@@ -35,7 +35,7 @@ class FakeOrigin:
 
     def __init__(self, referer=None, segment_type="text/plain", ranges=True,
                  master=MASTER_WITH_AUDIO, window=2, client_gate=None, shim=b"",
-                 playlist_type=None):
+                 playlist_type=None, page_query=None, page_iframe=None):
         self.referer = referer          # None serves anyone; a string gates on it
         # Stands in for a TLS fingerprint check. Plain HTTP has no handshake to screen,
         # so the origin requires a header only the impersonating client sends.
@@ -48,6 +48,11 @@ class FakeOrigin:
         # "VOD" or "EVENT": keeps every segment. VOD also ends with #EXT-X-ENDLIST, like
         # Apple's bipbop example.
         self.playlist_type = playlist_type
+        # A query on the page's playlist URL, written the way players embed it in a
+        # script: "&" as "&".
+        self.page_query = page_query
+        # An iframe the page embeds in place of its own player config.
+        self.page_iframe = page_iframe
         self.sequence = 0               # bumped to slide the window forward
         self.gone = set()               # segment names the origin has dropped
         self.flaky = {}                 # segment name -> refusals still to hand out
@@ -124,9 +129,13 @@ class FakeOrigin:
 
     def page(self):
         """A server-rendered player config for discover() to read."""
+        if self.page_iframe:
+            return ('<!doctype html><html><body><iframe src="%s"></iframe></body></html>'
+                    % self.page_iframe)
+        query = "?" + self.page_query.replace("&", "\\u0026") if self.page_query else ""
         return ('<!doctype html><html><body><div id="player"></div>'
-                '<script>var cfg = {"file": "%s/master.m3u8", "type": "hls"};</script>'
-                "</body></html>" % self.url)
+                '<script>var cfg = {"file": "%s/master.m3u8%s", "type": "hls"};</script>'
+                "</body></html>" % (self.url, query))
 
     def playlist(self, name):
         if name == "master.m3u8":

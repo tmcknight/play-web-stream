@@ -47,6 +47,19 @@ def gate_error(gated):
 BROWSER_NOTE = "the origin refused Python's TLS handshake -- presenting Safari's instead"
 
 
+def unreachable_error(unreachable):
+    """Name the pages that never loaded, so a dead route is not mistaken for no stream."""
+    pages = "; ".join("%s (%s)" % (url, reason) for url, reason in unreachable[:3])
+    message = "The page embeds a player that could not be fetched: %s." % pages
+    if hls_proxy.egress_proxy():
+        hint = ("Fetches go through the egress proxy at %s. A 503 from it usually means "
+                "its DNS refused the host; gluetun's BLOCK_MALICIOUS list does this to "
+                "many stream hosts." % hls_proxy.egress_label())
+    else:
+        hint = "Check that the host resolves and is reachable from this machine."
+    return ResolveError(message, hint)
+
+
 # --------------------------------------------------------------------------- finding
 
 def find_playlist(page_url, allow_browser=True, on_progress=None):
@@ -82,8 +95,9 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
 
     say("reading page HTML")
     gated = None
+    unreachable = []
     try:
-        found = hls_proxy.discover_through_gate(page_url)
+        found = hls_proxy.discover_through_gate(page_url, unreachable=unreachable)
     except hls_proxy.Gated as exc:
         # The browser fallback below may still get past the gate. If it cannot,
         # probe_mime reports it.
@@ -95,6 +109,8 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
     if not allow_browser:
         if gated:
             raise gate_error(gated)
+        if unreachable:
+            raise unreachable_error(unreachable)
         raise ResolveError("No playlist in the page HTML.",
                            "The player is built at runtime; retry with the browser "
                            "fallback enabled.")
@@ -113,6 +129,10 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
         found["method"] = "browser"
         return found
 
+    # The browser fetches through the same route, so a page the HTML scan could not
+    # reach is the likelier cause than DRM or geo-blocking.
+    if unreachable:
+        raise unreachable_error(unreachable)
     raise ResolveError("No playlist found, in the HTML or at runtime.",
                        "The page may be DRM-protected, geo-blocked from this network, "
                        "or not streaming right now.")

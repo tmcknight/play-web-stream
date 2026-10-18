@@ -44,6 +44,21 @@ def test_a_page_with_no_playlist_says_so():
     assert caught.value.hint
 
 
+def test_an_embed_that_cannot_be_fetched_is_named():
+    """A dead route (here, nothing listening) must not read as a page with no stream."""
+    with FakeOrigin(page_iframe="http://127.0.0.1:1/embed.html") as origin, \
+            pytest.raises(resolver.ResolveError) as caught:
+        resolver.find_playlist(origin.url + "/page.html", allow_browser=False)
+    assert "http://127.0.0.1:1/embed.html" in caught.value.message
+    assert caught.value.hint
+
+
+def test_an_escaped_ampersand_keeps_the_whole_query():
+    with FakeOrigin(page_query="st=token&e=1792346116") as origin:
+        found = resolver.find_playlist(origin.url + "/page.html", allow_browser=False)
+    assert found["playlist"].endswith("/master.m3u8?st=token&e=1792346116")
+
+
 def test_a_missing_playwright_is_reported_not_raised(monkeypatch):
     """A None entry in sys.modules makes the import fail, as on a machine without it."""
     monkeypatch.setitem(sys.modules, "playwright", None)

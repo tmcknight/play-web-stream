@@ -38,7 +38,10 @@ NAV_MS = _env_ms("PWS_BROWSER_NAV_MS", 25000)
 # extension.
 SCRAPE_JS = r"""
 () => {
-  const html = document.documentElement.outerHTML;
+  // Same unescaping as hls_proxy.unescape_js, so "&" does not end a URL early.
+  const html = document.documentElement.outerHTML
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\\//g, "/");
   const hits = new Set();
   for (const m of html.matchAll(/https?:\/\/[^\s"'`<>\\]+/g)) {
     if (/\.m3u8|\.mpd|playlist|stream|manifest|\/hls\//i.test(m[0])) hits.add(m[0]);
