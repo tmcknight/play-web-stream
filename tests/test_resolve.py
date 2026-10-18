@@ -1,10 +1,12 @@
 """The resolver: finding the playlist, and deciding whether the proxy is needed."""
 
+import sys
+
 import pytest
 
 import hls_proxy
 import resolve as resolver
-from origin import FakeOrigin
+from origin import WEBP_SHIM, FakeOrigin
 
 GATE = "https://page.example/"
 
@@ -40,6 +42,16 @@ def test_a_page_with_no_playlist_says_so():
     with pytest.raises(resolver.ResolveError) as caught:
         resolver.find_playlist("http://127.0.0.1:1/nothing", allow_browser=False)
     assert caught.value.hint
+
+
+def test_a_missing_playwright_is_reported_not_raised(monkeypatch):
+    """A None entry in sys.modules makes the import fail, as on a machine without it."""
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    with pytest.raises(resolver.ResolveError) as caught:
+        resolver.find_playlist("http://127.0.0.1:1/nothing")
+    assert sys.executable in caught.value.message
+    assert "Docker" in caught.value.hint
 
 
 # --------------------------------------------------------------------------- verifying
@@ -90,6 +102,14 @@ def test_a_wrong_mime_type_calls_for_the_proxy():
     assert verdict["mime"]["served_as"] == "text/plain"
     assert verdict["mime"]["really_is"] == "video/MP2T"
     assert verdict["method"] == "html"
+
+
+def test_media_behind_an_image_header_is_reported_as_the_media():
+    with FakeOrigin(segment_type="image/webp", shim=WEBP_SHIM) as origin:
+        verdict = resolver.resolve(origin.url + "/page.html", allow_browser=False)
+    assert verdict["needs_proxy"]
+    assert verdict["mime"]["served_as"] == "image/webp"
+    assert verdict["mime"]["really_is"] == "video/MP2T"
 
 
 def test_a_correct_mime_type_needs_no_proxy():

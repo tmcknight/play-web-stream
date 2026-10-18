@@ -101,7 +101,14 @@ def find_playlist(page_url, allow_browser=True, on_progress=None):
 
     say("no playlist in the HTML -- launching headless browser")
     import browser_find  # imported late; chromium is a slow import
-    found = browser_find.find_playlist(page_url, on_progress=say)
+    try:
+        found = browser_find.find_playlist(page_url, on_progress=say)
+    except browser_find.Unavailable as exc:
+        raise ResolveError(
+            "No playlist in the page HTML, and the browser fallback needs Playwright, "
+            "which %s cannot import." % sys.executable,
+            "Install it for that interpreter (pip install playwright && playwright "
+            "install chromium), or run the Docker image, which bundles it.") from exc
     if found:
         found["method"] = "browser"
         return found
@@ -146,7 +153,9 @@ def probe_mime(playlist, referer):
             # the container.
             data, seg_ct = hls_proxy.fetch_head(seg, referer=referer)
             served = (seg_ct or "").split(";")[0].strip().lower()
-            sniffed = hls_proxy.sniff_mime(data)
+            # Sniffed past any prepended header, which the proxy strips, so the report
+            # names the container the player will get.
+            sniffed = hls_proxy.sniff_mime(data[hls_proxy.media_offset(data):])
             return {"kind": "master" if variant else "media",
                     "variant": variant,
                     "playlist_content_type": ctype or "",
