@@ -19,6 +19,11 @@ import hls_proxy
 PLAYLIST_CT = re.compile(r'mpegurl|dash\+xml', re.I)
 
 
+class Unavailable(RuntimeError):
+    """Playwright cannot be imported. Raised apart from page failures so callers can
+    say which interpreter lacks it; the Node package of the same name does not count."""
+
+
 def _env_ms(name, fallback):
     value = os.environ.get(name, "").strip()
     return int(value) if value.isdigit() else fallback
@@ -75,8 +80,8 @@ def find_playlist(page_url, on_progress=None):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        raise RuntimeError("playwright is not installed on this machine -- "
-                           "pip install playwright && playwright install chromium") from exc
+        raise Unavailable("playwright is not installed for this Python -- "
+                          "pip install playwright && playwright install chromium") from exc
 
     from_network = []       # (url, referer) in the order the player asked for them
     scraped = []

@@ -1902,10 +1902,14 @@ def probe():
         if line and not line.startswith("#"):
             seg = urllib.parse.urljoin(url, line)
             data, seg_ct = fetch_head(seg, referer=opts.referer)
-            sniffed = sniff_mime(data)
+            offset = media_offset(data)
+            sniffed = sniff_mime(data[offset:])
             print("segment     : %s" % seg[:100])
             print("  served as : %s" % (seg_ct or "(none)"))
             print("  really is : %s" % sniffed)
+            if offset:
+                print("  prefix    : %d bytes before the media, stripped by the proxy"
+                      % offset)
             served = (seg_ct or "").split(";")[0].strip().lower()
             if served != sniffed.lower():
                 print("  VERDICT   : MIME mismatch -- native playback needs this proxy")
