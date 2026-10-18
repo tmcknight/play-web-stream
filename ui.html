@@ -726,7 +726,7 @@ function whatWeDid(r) {
   const said = [];
   if (!r.needs_proxy) {
     said.push("Nothing needed fixing, so the TV plays the site\u2019s own link.");
-  } else if (r.mime && r.mime.served_as !== r.mime.really_is && r.mime.really_is) {
+  } else if (r.mime && !r.mime.match) {
     said.push(`The site labels its video as ${r.mime.served_as}, which Apple devices refuse. `
               + "This app relabels it on the way through.");
   } else if (r.referer) {
