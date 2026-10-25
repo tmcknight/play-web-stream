@@ -1269,16 +1269,66 @@ def known_shim(url):
 # cache. Ordinary segments are relayed as they arrive, so they are not prefetched.
 PREFETCH = 4                    # newest segments kept warm
 PREFETCH_WORKERS = 3            # parallel fetches; the VPN gave about twice the throughput
-PREFETCH_WAIT = 30              # how long a request waits on a fetch already under way
+# How long a request waits on a fetch already under way. An Apple TV gives up on an item
+# after about 25 seconds without new media; one that waited out a dead segment's retries
+# and then its own sat for 57.
+PREFETCH_WAIT = 10
 # A segment can be listed before the CDN will serve it, and answer 404 for a few seconds.
 # The prefetch keeps asking, off the player's critical path.
 PREFETCH_REFUSALS = 5
 PREFETCH_BACKOFF = 1.5
+DEAD_SEGMENTS = 64              # refused segments remembered, for EXT-X-GAP
 
 _prefetch_pool = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_WORKERS)
 _prefetch_lock = threading.Lock()
 _inflight = {}                  # segment url -> Event set when its fetch ends
 _stream_kind = {}               # playlist url -> "probing", "wrapped" or "plain"
+_dead = collections.OrderedDict()   # segment url -> tagged yet, for segments refused for good
+
+
+def mark_dead(url):
+    with _prefetch_lock:
+        _dead.setdefault(url, False)
+        _dead.move_to_end(url)
+        while len(_dead) > DEAD_SEGMENTS:
+            _dead.popitem(last=False)
+
+
+def is_dead(url):
+    with _prefetch_lock:
+        return url in _dead
+
+
+def mark_gaps(text, base_url):
+    """Tag each segment the origin has refused for good with #EXT-X-GAP.
+
+    One origin lists segments that never become available, and an Apple TV that asks
+    for one ends the item. Tagged, the player skips the segment's few seconds instead.
+    A refused segment counts as missing only when a later one in the playlist has been
+    fetched, so an expired presign, which refuses every segment, is not tagged.
+    """
+    lines = text.splitlines()
+    urls = [(i, urllib.parse.urljoin(base_url, line.strip())) for i, line in enumerate(lines)
+            if line.strip() and not line.startswith("#")]
+    gaps, later_ok = set(), False
+    for i, url in reversed(urls):
+        if cache_get(url):
+            later_ok = True
+        elif later_ok and is_dead(url):
+            gaps.add(i)
+            with _prefetch_lock:
+                if _dead.get(url) is False:
+                    _dead[url] = True
+                    say("segment refused for good by the origin; tagged #EXT-X-GAP so the "
+                        "player skips it")
+    if not gaps:
+        return text
+    out = []
+    for i, line in enumerate(lines):
+        if i in gaps:
+            out.append("#EXT-X-GAP")
+        out.append(line)
+    return "\n".join(out) + "\n"
 
 
 def segment_urls(text, base_url):
@@ -1287,9 +1337,9 @@ def segment_urls(text, base_url):
 
 
 def _claim(url):
-    """Mark a segment as being fetched. False if it is cached or already under way."""
+    """Mark a segment as being fetched. False if cached, under way, or refused for good."""
     with _prefetch_lock:
-        if url in _inflight or cache_get(url):
+        if url in _inflight or url in _dead or cache_get(url):
             return False
         _inflight[url] = threading.Event()
         return True
@@ -1339,6 +1389,8 @@ def _prefetch_one(playlist, url, referer):
         if media[:1] == b"\x47":           # an image with nothing inside is left alone
             cache_put(url, sniff_mime(media, "video/MP2T"), media)
     except Exception as exc:                                       # noqa: BLE001
+        if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 404):
+            mark_dead(url)
         say("prefetch failed (%r); the player's own request will fetch it" % exc)
         with _prefetch_lock:
             if _stream_kind.get(playlist) == "probing":
@@ -1365,9 +1417,14 @@ def prefetch(playlist, segments, referer):
         wanted = segments[-PREFETCH:]
     else:
         return
+    claimed = False
     for url in reversed(wanted):            # newest first: the player starts near it
         if _claim(url):
+            claimed = True
             _prefetch_pool.submit(_prefetch_one, playlist, url, referer)
+    if kind is None and not claimed:
+        with _prefetch_lock:
+            del _stream_kind[playlist]      # nothing to probe with; try the next poll
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1428,6 +1485,7 @@ class Handler(BaseHTTPRequestHandler):
             text = accumulate(text, url)
         if not is_master(text):
             prefetch(url, segment_urls(text, url), referer)
+            text = mark_gaps(text, url)
         text = rewrite(text, url, self._prefix())
         self._send(text.encode(), PLAYLIST_MIME, cache=False)
 
@@ -1454,7 +1512,7 @@ class Handler(BaseHTTPRequestHandler):
                 _segment_types.popitem(last=False)
         return ctype
 
-    def _expired_presign(self, exc):
+    def _expired_presign(self, exc, url):
         """If this error is an expired presign, re-resolve and answer 404.
 
         The client's next playlist poll then gets freshly signed URLs.
@@ -1462,6 +1520,7 @@ class Handler(BaseHTTPRequestHandler):
         if exc.code not in (403, 404):
             return False
         exc.close()
+        mark_dead(url)
         resolve_source(force=True)
         say("segment %d (expired presign) - re-resolved source" % exc.code)
         self._send(b"segment expired", "text/plain", 404)
@@ -1516,6 +1575,11 @@ class Handler(BaseHTTPRequestHandler):
         if held:
             self._send_segment(held[1], held[0], rng)
             return
+        # Already refused, after retries: answer at once instead of keeping the player
+        # waiting on more. The next playlist poll tags it as a gap.
+        if is_dead(url):
+            self._send(b"segment missing at the origin", "text/plain", 404)
+            return
 
         # The client's range is relative to the media, not the prefixed file, so it
         # cannot be passed upstream. Fetch the whole segment and slice it here; the
@@ -1524,7 +1588,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 resp = self._open_segment(url, referer)
             except urllib.error.HTTPError as exc:
-                if self._expired_presign(exc):
+                if self._expired_presign(exc, url):
                     return
                 raise
             with resp:
@@ -1538,7 +1602,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             resp = self._open_segment(url, referer, rng)
         except urllib.error.HTTPError as exc:
-            if self._expired_presign(exc):
+            if self._expired_presign(exc, url):
                 return
             raise
 

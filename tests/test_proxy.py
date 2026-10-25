@@ -307,6 +307,50 @@ def test_a_segment_listed_before_the_cdn_has_it_is_waited_for(start_proxy):
         assert fetched(origin).count("video6.ts") == 4, "three refusals, then the copy"
 
 
+def gap_before(text, name_count):
+    """Whether #EXT-X-GAP precedes the segment line at this position (0-based)."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    uris = [i for i, line in enumerate(lines) if not line.startswith("#")]
+    return lines[uris[name_count] - 1] == "#EXT-X-GAP"
+
+
+def test_a_segment_that_never_arrives_is_tagged_as_a_gap(start_proxy):
+    """One origin lists segments that 404 for good, and an Apple TV that asks for one
+    ends the item. Tagged, the player skips it."""
+    with FakeOrigin(segment_type="image/png", image="pixels", window=6) as origin:
+        origin.gone.add("video4.ts")
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin) == ["video5.ts"])
+        proxy.text("/live.m3u8")
+        # Five more refusals, 1.5 seconds apart, before the prefetch gives up on it.
+        assert wait_until(lambda: fetched(origin).count("video4.ts") == 6, timeout=15)
+        assert wait_until(lambda: "#EXT-X-GAP" in proxy.text("/live.m3u8"), timeout=5)
+
+        text = proxy.text("/live.m3u8")
+        assert text.count("#EXT-X-GAP") == 1
+        assert gap_before(text, 4), "the gap is on video4"
+
+        segments = proxy.routes("/live.m3u8", "seg")
+        started = time.time()
+        status, _, _ = proxy.get(segments[4])
+        assert status == 404
+        assert time.time() - started < 1, "answered at once, not after more retries"
+        assert fetched(origin).count("video4.ts") == 6
+
+
+def test_a_stream_refusing_everything_is_not_mistaken_for_gaps(start_proxy):
+    """Every segment refused, as with an expired presign, is not a stream with holes."""
+    with FakeOrigin(segment_type="image/png", image="pixels", window=3) as origin:
+        origin.gone.update({"video0.ts", "video1.ts", "video2.ts"})
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin).count("video2.ts") == 6, timeout=15)
+        status, _, _ = proxy.get(proxy.routes("/live.m3u8", "seg")[0])
+        assert status == 404
+        assert "#EXT-X-GAP" not in proxy.text("/live.m3u8"), "no later segment arrived"
+
+
 def test_an_ordinary_stream_costs_one_probe_and_no_more(start_proxy):
     with FakeOrigin(segment_type="text/plain", window=6) as origin:
         proxy = start_proxy(origin.url + "/video.m3u8")
