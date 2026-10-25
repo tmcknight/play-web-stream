@@ -1290,14 +1290,18 @@ def known_shim(url):
 # near the live edge stalls on the first slow one. Fetching the newest segments as each
 # playlist is served, several at once, means the player's request is answered from the
 # cache. Ordinary segments are relayed as they arrive, so they are not prefetched.
-PREFETCH = 4                    # newest segments kept warm
+# Every listed segment is fetched once, as soon as it appears, newest first. The origin
+# that lists dead segments loses its older ones first, and an Apple TV starts about 15
+# seconds behind the edge, so keeping only the newest few warm left it fetching the ones
+# most likely gone. Capped at the default --window, which the 64 MB cache holds.
+PREFETCH = 12
 PREFETCH_WORKERS = 3            # parallel fetches; the VPN gave about twice the throughput
 # How long a request waits on a fetch already under way. An Apple TV gives up on an item
 # after about 25 seconds without new media; one that waited out a dead segment's retries
 # and then its own sat for 57.
 PREFETCH_WAIT = 10
-# A segment can be listed before the CDN will serve it, and answer 404 for a few seconds.
-# The prefetch keeps asking, off the player's critical path.
+# A segment can be listed before the CDN will serve it, and answer 404 for a few seconds,
+# and the CDN answers 429 when pressed. The prefetch keeps asking, off the player's path.
 PREFETCH_REFUSALS = 5
 PREFETCH_BACKOFF = 1.5
 DEAD_SEGMENTS = 64              # refused segments remembered, for EXT-X-GAP
@@ -1389,7 +1393,7 @@ def _open_patiently(url, referer):
         try:
             return open_media(url, referer, timeout=25)
         except urllib.error.HTTPError as exc:
-            if exc.code not in (403, 404) or attempt == PREFETCH_REFUSALS:
+            if exc.code not in (403, 404, 429) or attempt == PREFETCH_REFUSALS:
                 raise
             exc.close()
             time.sleep(PREFETCH_BACKOFF)

@@ -2,7 +2,8 @@
 
 Switches: a Referer gate, a client gate, segments served as the wrong type, expiring
 presigned URLs, ranges, a sliding window that drops old segments, a finished (VOD or
-EVENT) playlist, segments carried inside PNGs, and a player nested in iframes.
+EVENT) playlist, segments carried inside PNGs, rate limiting, and a player nested in
+iframes.
 """
 
 import gzip
@@ -126,6 +127,7 @@ class FakeOrigin:
         self.sequence = 0               # bumped to slide the window forward
         self.gone = set()               # segment names the origin has dropped
         self.flaky = {}                 # segment name -> refusals still to hand out
+        self.limited = {}               # segment name -> 429s still to hand out
         self.requests = []              # (path, Referer) in arrival order
         self.received = []              # every request's headers, in the same order
         self._server = None
@@ -233,6 +235,9 @@ class FakeOrigin:
         if self.flaky.get(name):
             self.flaky[name] -= 1
             return 404, "text/plain", b"not right now", None
+        if self.limited.get(name):
+            self.limited[name] -= 1
+            return 429, "text/plain", b"slow down", None
         data = png_carrying(SEGMENT, self.image) if self.image else self.shim + SEGMENT
         if self.ranges and rng and rng.startswith("bytes="):
             low, _, high = rng[6:].partition("-")
