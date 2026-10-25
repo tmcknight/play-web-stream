@@ -786,7 +786,7 @@ function showResult(r) {
             <dt>Playlist</dt><dd>${esc(r.playlist)}</dd>
             <dt>Referer</dt><dd>${esc(r.referer || "(not required)")}</dd>
             ${r.handshake === "browser" ? `<dt>Handshake</dt><dd>Safari's, via curl_cffi</dd>` : ""}
-            <dt>Segments</dt><dd>served as ${esc(r.mime.served_as)}, really ${esc(r.mime.really_is)}</dd>
+            <dt>Segments</dt><dd>served as ${esc(r.mime.served_as)}, really ${esc(r.mime.really_is)}${r.mime.wrapping ? ' (' + esc(r.mime.wrapping) + ')' : ''}</dd>
             <dt>Why</dt><dd>${esc(r.reason)}</dd>
           </dl>
         </div>

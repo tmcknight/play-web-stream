@@ -2,6 +2,8 @@
 
 import base64
 
+import pytest
+
 from origin import MASTER_PLAIN, SEGMENT, WEBP_SHIM, FakeOrigin
 
 GATE = "https://page.example/"
@@ -96,6 +98,32 @@ def test_a_range_on_a_shimmed_segment_counts_from_the_media(start_proxy):
     assert status == 206
     assert body == SEGMENT[:188]
     assert headers["Content-Range"] == "bytes 0-187/%d" % len(SEGMENT)
+
+
+@pytest.mark.parametrize("layout", ["pixels", "trailer"])
+def test_media_carried_inside_a_png_is_unpacked(start_proxy, layout):
+    """One origin hosts segments on an image CDN as real PNGs, and its page unpacks
+    them in JavaScript. AVFoundation is handed a PNG unless the proxy does the same."""
+    with FakeOrigin(segment_type="image/png", image=layout) as origin:
+        proxy = start_proxy(origin.url + "/master.m3u8")
+        status, headers, body = proxy.get(first_segment(proxy))
+
+    assert status == 200
+    assert headers["Content-Type"] == "video/MP2T"
+    assert body == SEGMENT
+    assert headers["Content-Length"] == str(len(SEGMENT))
+
+
+def test_a_range_on_a_png_segment_counts_from_the_media(start_proxy):
+    """The first request is ranged, so the proxy has to find out it is an image first."""
+    with FakeOrigin(segment_type="image/png", image="pixels") as origin:
+        proxy = start_proxy(origin.url + "/master.m3u8")
+        status, headers, body = proxy.get(first_segment(proxy), {"Range": "bytes=188-375"})
+
+    assert status == 206
+    assert body == SEGMENT[188:376]
+    assert headers["Content-Type"] == "video/MP2T"
+    assert headers["Content-Range"] == "bytes 188-375/%d" % len(SEGMENT)
 
 
 def test_an_unshimmed_segment_is_left_exactly_as_it_was(start_proxy):

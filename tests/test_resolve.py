@@ -53,6 +53,20 @@ def test_an_embed_that_cannot_be_fetched_is_named():
     assert caught.value.hint
 
 
+def test_a_player_four_iframes_down_is_found():
+    """Seen on an aggregator: event page, three embed pages, then the player."""
+    with FakeOrigin(nesting=4) as origin:
+        found = resolver.find_playlist(origin.url + "/page.html", allow_browser=False)
+    assert found["playlist"] == origin.url + "/master.m3u8"
+    assert found["page"] == origin.url + "/frame4.html"
+
+
+def test_a_playlist_named_relative_to_the_page_is_found():
+    with FakeOrigin(relative_playlist=True) as origin:
+        found = resolver.find_playlist(origin.url + "/page.html", allow_browser=False)
+    assert found["playlist"] == origin.url + "/master.m3u8"
+
+
 def test_an_escaped_ampersand_keeps_the_whole_query():
     with FakeOrigin(page_query="st=token&e=1792346116") as origin:
         found = resolver.find_playlist(origin.url + "/page.html", allow_browser=False)
@@ -125,6 +139,15 @@ def test_media_behind_an_image_header_is_reported_as_the_media():
     assert verdict["needs_proxy"]
     assert verdict["mime"]["served_as"] == "image/webp"
     assert verdict["mime"]["really_is"] == "video/MP2T"
+
+
+def test_media_inside_a_png_is_reported_as_the_media():
+    with FakeOrigin(segment_type="image/png", image="pixels") as origin:
+        verdict = resolver.resolve(origin.url + "/page.html", allow_browser=False)
+    assert verdict["needs_proxy"]
+    assert verdict["mime"]["served_as"] == "image/png"
+    assert verdict["mime"]["really_is"] == "video/MP2T"
+    assert "PNG" in verdict["mime"]["wrapping"]
 
 
 def test_a_correct_mime_type_needs_no_proxy():

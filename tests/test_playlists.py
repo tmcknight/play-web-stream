@@ -8,6 +8,7 @@ import hls_proxy
 from hls_proxy import (
     accumulate,
     decode_url,
+    image_media,
     keeps_everything,
     media_offset,
     parse_range,
@@ -15,7 +16,9 @@ from hls_proxy import (
     rewrite,
     should_flatten,
     sniff_mime,
+    unwrap_segment,
 )
+from origin import png_carrying
 
 PREFIX = "http://10.0.0.5:8787/tok"
 BASE = "https://o.x/a/master.m3u8"
@@ -286,6 +289,39 @@ def test_one_stray_sync_byte_is_not_a_shim():
 
 def test_a_shim_beyond_the_search_window_is_left_alone():
     assert media_offset(b"\x00" * (hls_proxy.SHIM_MAX + 10) + TS) == 0
+
+
+# ------------------------------------------------------------------------------ images
+
+@pytest.mark.parametrize("alpha", [False, True])
+def test_media_gzipped_into_the_pixels_is_recovered(alpha):
+    """Rows use every PNG filter type, as the real encoder's do."""
+    assert image_media(png_carrying(TS, "pixels", alpha=alpha)) == TS
+
+
+def test_media_after_the_end_of_an_image_is_recovered():
+    assert image_media(png_carrying(TS, "trailer")) == TS
+
+
+def test_an_ordinary_image_carries_no_media():
+    plain = png_carrying(b"", "trailer")
+    assert image_media(plain) is None
+    assert unwrap_segment(plain) == plain, "passed on unchanged"
+
+
+def test_a_truncated_image_is_not_mistaken_for_media():
+    data = png_carrying(TS, "pixels")
+    assert image_media(data[:len(data) // 2]) is None
+
+
+def test_a_pixel_payload_that_is_not_mpeg_ts_is_refused():
+    assert image_media(png_carrying(b"\x00" * 4000, "pixels")) is None
+
+
+def test_unwrapping_handles_every_segment_kind():
+    assert unwrap_segment(png_carrying(TS)) == TS
+    assert unwrap_segment(WEBP + TS) == TS
+    assert unwrap_segment(TS) == TS
 
 
 # --------------------------------------------------------------------------- ranges

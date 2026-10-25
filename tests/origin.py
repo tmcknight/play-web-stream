@@ -1,12 +1,15 @@
 """A fake origin with a switch for each awkward behaviour the proxy handles.
 
 Switches: a Referer gate, a client gate, segments served as the wrong type, expiring
-presigned URLs, ranges, a sliding window that drops old segments, and a finished (VOD
-or EVENT) playlist.
+presigned URLs, ranges, a sliding window that drops old segments, a finished (VOD or
+EVENT) playlist, segments carried inside PNGs, and a player nested in iframes.
 """
 
+import gzip
 import socket
+import struct
 import threading
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TS_PACKET = b"\x47" + b"\x00" * 187
@@ -16,6 +19,66 @@ SEGMENT = TS_PACKET * 40                # sniffs as video/MP2T, served as text/p
 # 42-byte RIFF/WEBP header, then the MPEG-TS. Same bytes as seen in the wild, so the
 # proxy finds the same offset.
 WEBP_SHIM = b"RIFF" + b"\x00" * 4 + b"WEBPVP8L" + b"\x00" * 26
+
+
+
+def _chunk(kind, body):
+    return (struct.pack(">I", len(body)) + kind + body
+            + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+
+
+def _filtered(rows, bpp):
+    """Filter each row with PNG filter types 0 to 4 in turn, so decoding meets all five."""
+    out, prev = [], bytes(len(rows[0]))
+    for y, row in enumerate(rows):
+        kind = y % 5
+        enc = bytearray()
+        for i, x in enumerate(row):
+            a = row[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if kind == 0:
+                guess = 0
+            elif kind == 1:
+                guess = a
+            elif kind == 2:
+                guess = b
+            elif kind == 3:
+                guess = (a + b) >> 1
+            else:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                guess = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            enc.append((x - guess) & 255)
+        out.append(bytes([kind]) + bytes(enc))
+        prev = row
+    return b"".join(out)
+
+
+def png_carrying(media, layout="pixels", alpha=False, width=4):
+    """A real PNG with `media` inside, in one of the two layouts origins use.
+
+    "pixels": a marker, a length and the gzipped media in the RGB values.
+    "trailer": an ordinary image with the media appended after IEND.
+    """
+    bpp = 4 if alpha else 3
+    if layout == "pixels":
+        packed = gzip.compress(media)
+        rgb = b"TIKTIKPX" + struct.pack(">I", len(packed)) + packed
+    else:
+        rgb = b"\x00" * 3
+    height = -(-len(rgb) // (width * 3))
+    rgb = rgb.ljust(width * height * 3, b"\x00")
+    pixels = rgb
+    if alpha:
+        pixels = b"".join(rgb[i:i + 3] + b"\xff" for i in range(0, len(rgb), 3))
+    stride = width * bpp
+    rows = [pixels[y * stride:(y + 1) * stride] for y in range(height)]
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6 if alpha else 2, 0, 0, 0)
+    image = (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+             + _chunk(b"IDAT", zlib.compress(_filtered(rows, bpp))) + _chunk(b"IEND", b""))
+    return image + media if layout == "trailer" else image
+
 
 MASTER_WITH_AUDIO = ("#EXTM3U\n"
                      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="audio.m3u8"\n'
@@ -35,7 +98,8 @@ class FakeOrigin:
 
     def __init__(self, referer=None, segment_type="text/plain", ranges=True,
                  master=MASTER_WITH_AUDIO, window=2, client_gate=None, shim=b"",
-                 playlist_type=None, page_query=None, page_iframe=None):
+                 playlist_type=None, page_query=None, page_iframe=None, image=None,
+                 nesting=0, relative_playlist=False):
         self.referer = referer          # None serves anyone; a string gates on it
         # Stands in for a TLS fingerprint check. Plain HTTP has no handshake to screen,
         # so the origin requires a header only the impersonating client sends.
@@ -53,6 +117,12 @@ class FakeOrigin:
         self.page_query = page_query
         # An iframe the page embeds in place of its own player config.
         self.page_iframe = page_iframe
+        # "pixels" or "trailer": each segment arrives as a PNG with the media inside.
+        self.image = image
+        # Levels of iframe between page.html and the player config.
+        self.nesting = nesting
+        # The player config names the playlist by a path relative to the page.
+        self.relative_playlist = relative_playlist
         self.sequence = 0               # bumped to slide the window forward
         self.gone = set()               # segment names the origin has dropped
         self.flaky = {}                 # segment name -> refusals still to hand out
@@ -118,7 +188,7 @@ class FakeOrigin:
             return 403, "text/plain", b"forbidden", None
         # Open page, gated media: the case where the Referer has to be discovered.
         if name.endswith(".html"):
-            return 200, "text/html; charset=utf-8", self.page().encode(), None
+            return 200, "text/html; charset=utf-8", self.page(name).encode(), None
         if self.referer and referer != self.referer:
             return 403, "text/plain", b"forbidden", None
         if name.endswith(".m3u8"):
@@ -127,15 +197,19 @@ class FakeOrigin:
             return self.segment(name, rng)
         return 404, "text/plain", b"not found", None
 
-    def page(self):
+    def page(self, name="page.html"):
         """A server-rendered player config for discover() to read."""
+        iframe = '<!doctype html><html><body><iframe src="%s"></iframe></body></html>'
         if self.page_iframe:
-            return ('<!doctype html><html><body><iframe src="%s"></iframe></body></html>'
-                    % self.page_iframe)
+            return iframe % self.page_iframe
+        level = int(name[5:-5]) if name.startswith("frame") else 0
+        if level < self.nesting:
+            return iframe % ("/frame%d.html" % (level + 1))
         query = "?" + self.page_query.replace("&", "\\u0026") if self.page_query else ""
+        base = "" if self.relative_playlist else self.url
         return ('<!doctype html><html><body><div id="player"></div>'
                 '<script>var cfg = {"file": "%s/master.m3u8%s", "type": "hls"};</script>'
-                "</body></html>" % (self.url, query))
+                "</body></html>" % (base, query))
 
     def playlist(self, name):
         if name == "master.m3u8":
@@ -159,7 +233,7 @@ class FakeOrigin:
         if self.flaky.get(name):
             self.flaky[name] -= 1
             return 404, "text/plain", b"not right now", None
-        data = self.shim + SEGMENT
+        data = png_carrying(SEGMENT, self.image) if self.image else self.shim + SEGMENT
         if self.ranges and rng and rng.startswith("bytes="):
             low, _, high = rng[6:].partition("-")
             low = int(low or 0)

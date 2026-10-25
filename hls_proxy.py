@@ -28,6 +28,7 @@ import contextlib
 import email.message
 import errno
 import glob
+import gzip
 import hashlib
 import hmac
 import io
@@ -38,6 +39,7 @@ import re
 import secrets
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -47,6 +49,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -534,6 +537,152 @@ def media_offset(data):
         if len(data) - offset >= 188 * SHIM_PACKETS and all(data[i] == 0x47 for i in probe):
             return offset
     return 0
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# Pixel payloads open with this marker, then a 4-byte big-endian length, then gzip.
+PIXEL_MARKER = b"TIKTIKPX"
+
+
+def is_image(data):
+    return data[:8] == PNG_SIGNATURE
+
+
+def _png_chunks(data):
+    """Yield (type, body, end) for each chunk up to IEND. Stops at a truncated chunk."""
+    offset = 8
+    while offset + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        end = offset + 12 + length
+        if end > len(data):
+            return
+        yield kind, data[offset + 8:offset + 8 + length], end
+        if kind == b"IEND":
+            return
+        offset = end
+
+
+def _paeth(a, b, c):
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    return b if pb <= pc else c
+
+
+def _unfilter(raw, width, height, bpp):
+    """Undo PNG's per-row filters. Returns the pixel bytes, rows concatenated.
+
+    The encoder leaves about half the rows unfiltered, and those are copied as they are,
+    which keeps a 4 MB segment to a fraction of a second in pure Python.
+    """
+    stride = width * bpp
+    if len(raw) < height * (stride + 1):
+        return None
+    out = bytearray()
+    prev = bytes(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind = raw[start]
+        row = raw[start + 1:start + 1 + stride]
+        if kind == 0:
+            cur = row
+        elif kind == 2:
+            cur = bytes([(x + b) & 255 for x, b in zip(row, prev)])
+        elif kind in (1, 3, 4):
+            cur = bytearray(row)
+            for i in range(stride):
+                a = cur[i - bpp] if i >= bpp else 0
+                if kind == 1:
+                    cur[i] = (cur[i] + a) & 255
+                elif kind == 3:
+                    cur[i] = (cur[i] + ((a + prev[i]) >> 1)) & 255
+                else:
+                    c = prev[i - bpp] if i >= bpp else 0
+                    cur[i] = (cur[i] + _paeth(a, prev[i], c)) & 255
+        else:
+            return None
+        out += cur
+        prev = cur
+    return out
+
+
+def image_media(data):
+    """Recover MPEG-TS carried inside a PNG, or None if this PNG carries none.
+
+    Some origins host segments on an image CDN that only accepts real images, and the
+    page's own player unpacks them in JavaScript. Two layouts are in use: the TS appended
+    after the IEND chunk, and the TS gzipped into the RGB values of the pixels behind a
+    marker and a length. AVFoundation will play neither, so the proxy unpacks them here.
+    """
+    if not is_image(data):
+        return None
+    width = height = 0
+    idat = []
+    after = 0                           # where the last chunk ended
+    for kind, body, end in _png_chunks(data):
+        after = end
+        if kind == b"IHDR" and len(body) >= 13:
+            width, height, depth, colour, _, _, interlace = struct.unpack(">IIBBBBB", body[:13])
+            if depth != 8 or interlace or colour not in (2, 6):
+                width = 0               # not a layout the encoder produces
+        elif kind == b"IDAT":
+            idat.append(body)
+
+    trailer = data[after:]
+    if len(trailer) > 188 and trailer[0] == 0x47 and trailer[188] == 0x47:
+        return trailer
+    if not (width and height and idat):
+        return None
+
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error:
+        return None
+    bpp = 4 if colour == 6 else 3
+    pixels = _unfilter(raw, width, height, bpp)
+    if pixels is None:
+        return None
+    if bpp == 4:
+        del pixels[3::4]                # the payload is in RGB only
+    if pixels[:8] != PIXEL_MARKER:
+        return None
+    (length,) = struct.unpack(">I", pixels[8:12])
+    payload = bytes(pixels[12:12 + length])
+    if len(payload) != length:
+        return None
+    try:
+        media = gzip.decompress(payload)
+    except (OSError, EOFError, zlib.error):
+        return None
+    return media if media[:1] == b"\x47" else None
+
+
+def unwrap_segment(data):
+    """The media inside a whole segment: unpacked from an image, past a prefix, or as is."""
+    if is_image(data):
+        return image_media(data) or data
+    return data[media_offset(data[:SNIFF_BYTES]):]
+
+
+def read_segment(url, referer=None):
+    """Fetch enough of a segment to name what the player will get from the proxy.
+
+    Returns (media head, served Content-Type, wrapping), where wrapping describes what
+    the proxy removes, or is empty for plain media. A PNG has to be read whole, since its
+    payload is compressed across every row.
+    """
+    data, served = fetch_head(url, referer=referer)
+    if is_image(data):
+        whole, served = fetch_head(url, referer=referer, limit=SEGMENT_MAX)
+        media = image_media(whole)
+        if media:
+            return media[:SNIFF_BYTES], served, "carried inside a PNG, unpacked by the proxy"
+        return data, served, ""
+    offset = media_offset(data)
+    if offset:
+        return data[offset:], served, "%d bytes before the media, stripped by the proxy" % offset
+    return data, served, ""
 
 
 # --------------------------------------------------------------------------- playlists
@@ -1087,6 +1236,9 @@ _types_lock = threading.Lock()
 _segment_types = collections.OrderedDict()      # segment url -> Content-Type
 _segment_shims = collections.OrderedDict()      # segment url -> bytes before the media
 SEGMENT_TYPES = 64
+# Recorded in place of an offset for a segment carried in an image. The media is
+# compressed across the whole file, so no range of it can be fetched on its own.
+IMAGE_SHIM = -1
 
 
 def remember_shim(url, offset):
@@ -1220,7 +1372,7 @@ class Handler(BaseHTTPRequestHandler):
         raise AssertionError("unreachable")
 
     def _shim_offset(self, url, referer):
-        """Length of any prefix before this segment's media, cached per URL.
+        """Length of any prefix before this segment's media, cached per URL, or IMAGE_SHIM.
 
         Usually the first, unranged request records it. If a ranged request comes first,
         the opening bytes are fetched separately, once per URL.
@@ -1236,7 +1388,7 @@ class Handler(BaseHTTPRequestHandler):
                 head = resp.read(SNIFF_BYTES)
         except Exception:                                         # noqa: BLE001
             return 0                    # unknown for now; relay unchanged
-        return remember_shim(url, media_offset(head))
+        return remember_shim(url, IMAGE_SHIM if is_image(head) else media_offset(head))
 
     def _serve_segment(self, url, referer):
         """Serve a segment from the cache, or else from the origin.
@@ -1263,7 +1415,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise
             with resp:
                 body = resp.read(SEGMENT_MAX + 1)
-            body = body[media_offset(body[:SNIFF_BYTES]):]
+            body = unwrap_segment(body)
             ctype = sniff_mime(body, resp.headers.get("Content-Type") or "video/MP2T")
             cache_put(url, ctype, body)
             self._send_segment(body, ctype, rng)
@@ -1304,6 +1456,9 @@ class Handler(BaseHTTPRequestHandler):
         with resp:
             head = resp.read(SNIFF_BYTES)
             partial = resp.status == 206
+            if not partial and is_image(head):
+                self._unpack_segment(url, head, resp)
+                return
             # A prefix can only be seen, and stripped, in a response from offset zero.
             offset = 0 if partial else remember_shim(url, media_offset(head))
             head = head[offset:]
@@ -1349,6 +1504,24 @@ class Handler(BaseHTTPRequestHandler):
 
             if kept is not None:
                 cache_put(url, ctype, b"".join(kept))
+
+    def _unpack_segment(self, url, head, resp):
+        """Read a PNG-carried segment whole, then serve the media inside it.
+
+        Nothing can be sent until the whole image has arrived and been decoded, so this
+        costs the segment's download time in start-up delay. An image with no media in it
+        is passed on unchanged.
+        """
+        remember_shim(url, IMAGE_SHIM)
+        whole = head + resp.read(SEGMENT_MAX + 1 - len(head))
+        media = image_media(whole)
+        if media is None:
+            say("segment is a PNG with no MPEG-TS inside that this proxy can unpack; "
+                "passing it on as it is")
+            media = whole
+        ctype = sniff_mime(media, resp.headers.get("Content-Type") or "video/MP2T")
+        cache_put(url, ctype, media)
+        self._send_segment(media, ctype, None)
 
     def do_HEAD(self):
         """Answer HEAD with the GET headers and no body.
@@ -1546,6 +1719,9 @@ def watch_idle(timeout, source):
 
 IFRAME_SRC = re.compile(r'<iframe[^>]+src=["\']([^"\']+)["\']', re.I)
 URL_IN_PAGE = re.compile(r'https?://[^\s"\'`<>\\)]+')
+# A playlist path relative to the page, as a quoted string. No colon is allowed, so
+# absolute URLs (found above) and template literals are not matched.
+RELATIVE_PLAYLIST = re.compile(r'["\']([\w\-./]*\.m3u8(?:\?[^"\'\s<>]*)?)["\']')
 B64_BLOB = re.compile(r'["\']([A-Za-z0-9+/]{24,}={0,2})["\']')
 PLAYLISTY = re.compile(r'\.m3u8|\.mpd|playlist|manifest|/hls/|stream', re.I)
 NOISE = re.compile(r'youtube|ytimg|google|doubleclick|facebook|twitter|gstatic|'
@@ -1799,12 +1975,15 @@ def unescape_js(text):
     return text.replace("\\/", "/")
 
 
-def discover(page_url, depth=2, referer=None, seen=None, blocked=None, unreachable=None):
+def discover(page_url, depth=4, referer=None, seen=None, blocked=None, unreachable=None):
     """Find the playlist behind a page without a browser.
 
     These pages are server-rendered, so the player config is in the HTML as a URL or a
     base64 blob. Use Playwright only when this finds nothing, which means the player is
     built at runtime.
+
+    Aggregator pages nest the player in iframes, and four levels between the event page
+    and the player have been seen, hence the default depth.
 
     A page that cannot be fetched at all goes into `unreachable` as (url, reason). An
     embed that never loads looks the same as a page with no stream unless it is named.
@@ -1836,6 +2015,8 @@ def discover(page_url, depth=2, referer=None, seen=None, blocked=None, unreachab
         url = match.group(0).rstrip("\\\"'")
         if PLAYLISTY.search(url) and not NOISE.search(url):
             candidates.append(url)
+    for match in RELATIVE_PLAYLIST.finditer(html):
+        candidates.append(urllib.parse.urljoin(page_url, match.group(1)))
     for match in B64_BLOB.finditer(html):
         try:
             decoded = base64.b64decode(match.group(1)).decode("utf-8")
@@ -1920,15 +2101,13 @@ def probe():
         line = line.strip()
         if line and not line.startswith("#"):
             seg = urllib.parse.urljoin(url, line)
-            data, seg_ct = fetch_head(seg, referer=opts.referer)
-            offset = media_offset(data)
-            sniffed = sniff_mime(data[offset:])
+            data, seg_ct, wrapping = read_segment(seg, referer=opts.referer)
+            sniffed = sniff_mime(data)
             print("segment     : %s" % seg[:100])
             print("  served as : %s" % (seg_ct or "(none)"))
             print("  really is : %s" % sniffed)
-            if offset:
-                print("  prefix    : %d bytes before the media, stripped by the proxy"
-                      % offset)
+            if wrapping:
+                print("  wrapping  : %s" % wrapping)
             served = (seg_ct or "").split(";")[0].strip().lower()
             if served != sniffed.lower():
                 print("  VERDICT   : MIME mismatch -- native playback needs this proxy")
