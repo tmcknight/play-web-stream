@@ -274,6 +274,39 @@ def test_png_segments_are_fetched_before_the_player_asks(start_proxy):
         assert fetched(origin).count("video5.ts") == 1, "served from the prefetch"
 
 
+def test_segments_behind_an_image_header_are_prefetched_too(start_proxy):
+    with FakeOrigin(segment_type="image/webp", shim=WEBP_SHIM, window=6) as origin:
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin) == ["video5.ts"])
+        segments = proxy.routes("/live.m3u8", "seg")
+        assert wait_until(lambda: len(set(fetched(origin))) == 4)
+
+        status, headers, body = proxy.get(segments[-1])
+        assert status == 200
+        assert body == SEGMENT, "the header is still on the front"
+        assert fetched(origin).count("video5.ts") == 1, "served from the prefetch"
+
+
+def test_a_segment_listed_before_the_cdn_has_it_is_waited_for(start_proxy):
+    """The origin can list a segment that answers 404 for a few seconds. The player's
+    own request retries once; the prefetch keeps going, so the player is not kept
+    waiting on it or handed the 404."""
+    with FakeOrigin(segment_type="image/png", image="pixels", window=6) as origin:
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin) == ["video5.ts"])
+        origin.slide(drop=False)
+        origin.flaky["video6.ts"] = 3
+        segments = proxy.routes("/live.m3u8", "seg")
+        assert wait_until(lambda: fetched(origin).count("video6.ts") == 4)
+
+        status, _, body = proxy.get(segments[-1])
+        assert status == 200
+        assert body == SEGMENT
+        assert fetched(origin).count("video6.ts") == 4, "three refusals, then the copy"
+
+
 def test_an_ordinary_stream_costs_one_probe_and_no_more(start_proxy):
     with FakeOrigin(segment_type="text/plain", window=6) as origin:
         proxy = start_proxy(origin.url + "/video.m3u8")
