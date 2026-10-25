@@ -1261,19 +1261,24 @@ def known_shim(url):
 
 # ------------------------------------------------------------------------- prefetch
 
-# A PNG-carried segment can only be served once it has been downloaded whole and decoded,
-# which through a VPN took 2 to 10 seconds per 6-second segment. An Apple TV that starts
+# Wrapped segments (carried in a PNG, or behind an image header) come from image CDNs
+# through the deployment's VPN, where a 6-second segment took 2 to 10 seconds to fetch,
+# and a PNG cannot be served at all until it has arrived whole. An Apple TV that starts
 # near the live edge stalls on the first slow one. Fetching the newest segments as each
 # playlist is served, several at once, means the player's request is answered from the
 # cache. Ordinary segments are relayed as they arrive, so they are not prefetched.
 PREFETCH = 4                    # newest segments kept warm
 PREFETCH_WORKERS = 3            # parallel fetches; the VPN gave about twice the throughput
 PREFETCH_WAIT = 30              # how long a request waits on a fetch already under way
+# A segment can be listed before the CDN will serve it, and answer 404 for a few seconds.
+# The prefetch keeps asking, off the player's critical path.
+PREFETCH_REFUSALS = 5
+PREFETCH_BACKOFF = 1.5
 
 _prefetch_pool = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_WORKERS)
 _prefetch_lock = threading.Lock()
 _inflight = {}                  # segment url -> Event set when its fetch ends
-_stream_kind = {}               # playlist url -> "probing", "image" or "plain"
+_stream_kind = {}               # playlist url -> "probing", "wrapped" or "plain"
 
 
 def segment_urls(text, base_url):
@@ -1305,21 +1310,33 @@ def wait_for_prefetch(url):
         pending.wait(PREFETCH_WAIT)
 
 
+def _open_patiently(url, referer):
+    """Open a segment, waiting out the 404s of one listed before the CDN has it."""
+    for attempt in range(PREFETCH_REFUSALS + 1):
+        try:
+            return open_media(url, referer, timeout=25)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 404) or attempt == PREFETCH_REFUSALS:
+                raise
+            exc.close()
+            time.sleep(PREFETCH_BACKOFF)
+    raise AssertionError("unreachable")
+
+
 def _prefetch_one(playlist, url, referer):
-    """Fetch, unpack and cache one segment. Failures are left to the player's request."""
+    """Fetch, unwrap and cache one segment. Failures are left to the player's request."""
     try:
-        with open_media(url, referer, timeout=25) as resp:
+        with _open_patiently(url, referer) as resp:
             head = resp.read(SNIFF_BYTES)
-            if not is_image(head):
-                with _prefetch_lock:
-                    _stream_kind[playlist] = "plain"
-                return
+            offset = IMAGE_SHIM if is_image(head) else media_offset(head)
             with _prefetch_lock:
-                _stream_kind[playlist] = "image"
-            remember_shim(url, IMAGE_SHIM)
+                _stream_kind[playlist] = "wrapped" if offset else "plain"
+            if not offset:
+                return
+            remember_shim(url, offset)
             whole = head + resp.read(SEGMENT_MAX + 1 - len(head))
-        media = image_media(whole)
-        if media is not None:
+        media = unwrap_segment(whole)
+        if media[:1] == b"\x47":           # an image with nothing inside is left alone
             cache_put(url, sniff_mime(media, "video/MP2T"), media)
     except Exception as exc:                                       # noqa: BLE001
         say("prefetch failed (%r); the player's own request will fetch it" % exc)
@@ -1331,7 +1348,7 @@ def _prefetch_one(playlist, url, referer):
 
 
 def prefetch(playlist, segments, referer):
-    """Warm the cache with the newest segments of an image-carried stream.
+    """Warm the cache with the newest segments of a wrapped stream.
 
     The first poll of a playlist fetches only its newest segment, to learn what kind of
     stream it is. An ordinary stream costs that one request and nothing more.
@@ -1344,7 +1361,7 @@ def prefetch(playlist, segments, referer):
             _stream_kind[playlist] = "probing"
     if kind is None:
         wanted = segments[-1:]
-    elif kind == "image":
+    elif kind == "wrapped":
         wanted = segments[-PREFETCH:]
     else:
         return
