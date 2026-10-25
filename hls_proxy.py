@@ -685,6 +685,29 @@ def read_segment(url, referer=None):
     return data, served, ""
 
 
+PROBE_TRIES = 3
+
+
+def probe_segments(text, base_url, referer=None):
+    """read_segment() on the newest segment the origin will serve.
+
+    One origin lists segments that 404 for good, the oldest most often, and probing the
+    first listed failed the whole resolve. The newest is tried first, then older ones.
+    Returns (segment url, media head, served Content-Type, wrapping), or None for a
+    playlist with no segments. Raises the last refusal if every try is refused.
+    """
+    segments = [urllib.parse.urljoin(base_url, line.strip()) for line in text.splitlines()
+                if line.strip() and not line.startswith("#")]
+    for attempt, seg in enumerate(reversed(segments[-PROBE_TRIES:])):
+        try:
+            return (seg,) + read_segment(seg, referer=referer)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 404) or attempt == min(PROBE_TRIES, len(segments)) - 1:
+                raise
+            exc.close()
+    return None
+
+
 # --------------------------------------------------------------------------- playlists
 
 def is_master(text):
@@ -2275,23 +2298,20 @@ def probe():
         body, _ = fetch(url, referer=opts.referer)
         text = body.decode("utf-8", "replace")
 
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            seg = urllib.parse.urljoin(url, line)
-            data, seg_ct, wrapping = read_segment(seg, referer=opts.referer)
-            sniffed = sniff_mime(data)
-            print("segment     : %s" % seg[:100])
-            print("  served as : %s" % (seg_ct or "(none)"))
-            print("  really is : %s" % sniffed)
-            if wrapping:
-                print("  wrapping  : %s" % wrapping)
-            served = (seg_ct or "").split(";")[0].strip().lower()
-            if served != sniffed.lower():
-                print("  VERDICT   : MIME mismatch -- native playback needs this proxy")
-            else:
-                print("  VERDICT   : MIME correct -- try the URL in Safari directly first")
-            break
+    probed = probe_segments(text, url, referer=opts.referer)
+    if probed:
+        seg, data, seg_ct, wrapping = probed
+        sniffed = sniff_mime(data)
+        print("segment     : %s" % seg[:100])
+        print("  served as : %s" % (seg_ct or "(none)"))
+        print("  really is : %s" % sniffed)
+        if wrapping:
+            print("  wrapping  : %s" % wrapping)
+        served = (seg_ct or "").split(";")[0].strip().lower()
+        if served != sniffed.lower():
+            print("  VERDICT   : MIME mismatch -- native playback needs this proxy")
+        else:
+            print("  VERDICT   : MIME correct -- try the URL in Safari directly first")
 
 
 def self_test():
