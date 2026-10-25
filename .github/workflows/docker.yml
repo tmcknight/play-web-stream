@@ -41,6 +41,16 @@ jobs:
             type=edge,branch=main
             type=ref,event=pr
 
+      # The version the UI footer shows: the release on a tag, otherwise the image tag
+      # (edge, pr-N) with the commit, since edge alone says nothing about which build.
+      - id: version
+        env:
+          META_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="$META_VERSION"
+          else v="$META_VERSION-${GITHUB_SHA::7}"; fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
       # amd64 only: arm64 builds under QEMU and took over half an hour. Elsewhere, build
       # from source.
       - uses: docker/build-push-action@v6
@@ -50,5 +60,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: PWS_VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

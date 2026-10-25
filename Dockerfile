@@ -24,6 +24,11 @@ RUN apt-get update \
  && chmod -R a+rX /opt/playwright \
  && rm -rf /var/lib/apt/lists/*
 
+# The image has no .git for webapp.py to ask, so the build passes the version in.
+# Declared after the dependency layer, so a new version does not rebuild it.
+ARG PWS_VERSION=""
+ENV PWS_VERSION=$PWS_VERSION
+
 COPY hls_proxy.py resolve.py browser_find.py airplay.py airplay_protocol.py \
      webapp.py ui.html ./
 
