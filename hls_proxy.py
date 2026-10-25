@@ -1259,6 +1259,100 @@ def known_shim(url):
     return None
 
 
+# ------------------------------------------------------------------------- prefetch
+
+# A PNG-carried segment can only be served once it has been downloaded whole and decoded,
+# which through a VPN took 2 to 10 seconds per 6-second segment. An Apple TV that starts
+# near the live edge stalls on the first slow one. Fetching the newest segments as each
+# playlist is served, several at once, means the player's request is answered from the
+# cache. Ordinary segments are relayed as they arrive, so they are not prefetched.
+PREFETCH = 4                    # newest segments kept warm
+PREFETCH_WORKERS = 3            # parallel fetches; the VPN gave about twice the throughput
+PREFETCH_WAIT = 30              # how long a request waits on a fetch already under way
+
+_prefetch_pool = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_WORKERS)
+_prefetch_lock = threading.Lock()
+_inflight = {}                  # segment url -> Event set when its fetch ends
+_stream_kind = {}               # playlist url -> "probing", "image" or "plain"
+
+
+def segment_urls(text, base_url):
+    return [urllib.parse.urljoin(base_url, line.strip()) for line in text.splitlines()
+            if line.strip() and not line.startswith("#")]
+
+
+def _claim(url):
+    """Mark a segment as being fetched. False if it is cached or already under way."""
+    with _prefetch_lock:
+        if url in _inflight or cache_get(url):
+            return False
+        _inflight[url] = threading.Event()
+        return True
+
+
+def _release(url):
+    with _prefetch_lock:
+        done = _inflight.pop(url, None)
+    if done:
+        done.set()
+
+
+def wait_for_prefetch(url):
+    """If this segment is being prefetched, wait for that rather than fetch it twice."""
+    with _prefetch_lock:
+        pending = _inflight.get(url)
+    if pending:
+        pending.wait(PREFETCH_WAIT)
+
+
+def _prefetch_one(playlist, url, referer):
+    """Fetch, unpack and cache one segment. Failures are left to the player's request."""
+    try:
+        with open_media(url, referer, timeout=25) as resp:
+            head = resp.read(SNIFF_BYTES)
+            if not is_image(head):
+                with _prefetch_lock:
+                    _stream_kind[playlist] = "plain"
+                return
+            with _prefetch_lock:
+                _stream_kind[playlist] = "image"
+            remember_shim(url, IMAGE_SHIM)
+            whole = head + resp.read(SEGMENT_MAX + 1 - len(head))
+        media = image_media(whole)
+        if media is not None:
+            cache_put(url, sniff_mime(media, "video/MP2T"), media)
+    except Exception as exc:                                       # noqa: BLE001
+        say("prefetch failed (%r); the player's own request will fetch it" % exc)
+        with _prefetch_lock:
+            if _stream_kind.get(playlist) == "probing":
+                del _stream_kind[playlist]          # try again on the next poll
+    finally:
+        _release(url)
+
+
+def prefetch(playlist, segments, referer):
+    """Warm the cache with the newest segments of an image-carried stream.
+
+    The first poll of a playlist fetches only its newest segment, to learn what kind of
+    stream it is. An ordinary stream costs that one request and nothing more.
+    """
+    if not _cache_limit or not segments:
+        return
+    with _prefetch_lock:
+        kind = _stream_kind.get(playlist)
+        if kind is None:
+            _stream_kind[playlist] = "probing"
+    if kind is None:
+        wanted = segments[-1:]
+    elif kind == "image":
+        wanted = segments[-PREFETCH:]
+    else:
+        return
+    for url in reversed(wanted):            # newest first: the player starts near it
+        if _claim(url):
+            _prefetch_pool.submit(_prefetch_one, playlist, url, referer)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     head_only = False
@@ -1315,6 +1409,8 @@ class Handler(BaseHTTPRequestHandler):
         text = body.decode("utf-8", "replace")
         if opts.window and not is_master(text) and not keeps_everything(text):
             text = accumulate(text, url)
+        if not is_master(text):
+            prefetch(url, segment_urls(text, url), referer)
         text = rewrite(text, url, self._prefix())
         self._send(text.encode(), PLAYLIST_MIME, cache=False)
 
@@ -1398,6 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
         every range fed the decoder garbage.
         """
         rng = self.headers.get("Range")
+        wait_for_prefetch(url)
         held = cache_get(url)
         if held:
             self._send_segment(held[1], held[0], rng)
