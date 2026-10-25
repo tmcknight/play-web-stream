@@ -1,6 +1,7 @@
 """The proxy on the wire, against a fake origin that behaves like real ones."""
 
 import base64
+import time
 
 import pytest
 
@@ -237,6 +238,51 @@ def test_a_range_is_cut_from_the_cached_copy(start_proxy):
     assert status == 206
     assert headers["Content-Range"] == "bytes 10-19/%d" % len(SEGMENT)
     assert body == SEGMENT[10:20]
+
+
+# --------------------------------------------------------------------------- prefetch
+
+def fetched(origin):
+    """Segment names the origin has been asked for, in order."""
+    return [path.lstrip("/") for path, _ in origin.requests if path.endswith(".ts")]
+
+
+def wait_until(check, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if check():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_png_segments_are_fetched_before_the_player_asks(start_proxy):
+    """Unpacking needs the whole image, which through a VPN took longer than the segment
+    plays. An Apple TV that waited on each one stalled."""
+    with FakeOrigin(segment_type="image/png", image="pixels", window=6) as origin:
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")                    # learns it is an image stream
+        assert wait_until(lambda: fetched(origin) == ["video5.ts"])
+        segments = proxy.routes("/live.m3u8", "seg")
+        assert wait_until(lambda: len(set(fetched(origin))) == 4)
+        assert set(fetched(origin)) == {"video2.ts", "video3.ts", "video4.ts", "video5.ts"}
+
+        status, headers, body = proxy.get(segments[-1])
+        assert status == 200
+        assert body == SEGMENT
+        assert headers["Content-Type"] == "video/MP2T"
+        assert fetched(origin).count("video5.ts") == 1, "served from the prefetch"
+
+
+def test_an_ordinary_stream_costs_one_probe_and_no_more(start_proxy):
+    with FakeOrigin(segment_type="text/plain", window=6) as origin:
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin) == ["video5.ts"])
+        for _ in range(3):
+            proxy.text("/live.m3u8")
+        time.sleep(0.5)
+        assert fetched(origin) == ["video5.ts"]
 
 
 # --------------------------------------------------------------------------- tokens
