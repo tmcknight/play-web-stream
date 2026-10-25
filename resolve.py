@@ -168,20 +168,19 @@ def probe_mime(playlist, referer):
         line = line.strip()
         if line and not line.startswith("#"):
             seg = urllib.parse.urljoin(url, line)
-            # Some origins gate segments too. fetch_head sends the Referer, and drops it
-            # for origins that object to one. Only the opening bytes are needed to name
-            # the container.
-            data, seg_ct = hls_proxy.fetch_head(seg, referer=referer)
+            # Some origins gate segments too, so the Referer goes with this, and is dropped
+            # for origins that object to one. The sniff looks past any wrapping the proxy
+            # removes, so the report names the container the player will get.
+            data, seg_ct, wrapping = hls_proxy.read_segment(seg, referer=referer)
             served = (seg_ct or "").split(";")[0].strip().lower()
-            # Sniffed past any prepended header, which the proxy strips, so the report
-            # names the container the player will get.
-            sniffed = hls_proxy.sniff_mime(data[hls_proxy.media_offset(data):])
+            sniffed = hls_proxy.sniff_mime(data)
             return {"kind": "master" if variant else "media",
                     "variant": variant,
                     "playlist_content_type": ctype or "",
                     "segment": seg,
                     "served_as": served or "(none)",
                     "really_is": sniffed,
+                    "wrapping": wrapping,
                     "match": served == sniffed.lower()}
 
     raise ResolveError("The playlist lists no segments.",

@@ -34,7 +34,7 @@ python3 ~/.claude/skills/play-web-stream/hls_proxy.py --discover "<page-url>"
 ```
 
 These pages are server-rendered, so the player config is in the HTML. Discovery follows
-iframes two levels deep, decodes base64 blobs, and confirms each candidate by fetching it
+iframes four levels deep, decodes base64 blobs, and confirms each candidate by fetching it
 and checking for `#EXTM3U`. On success it prints the playlist URL **and whether a Referer
 is required**, which also covers step 2:
 
@@ -131,6 +131,9 @@ python3 ~/.claude/skills/play-web-stream/hls_proxy.py \
 ```
 
 It reports each segment's served type against its real type and prints a verdict.
+A `wrapping` line means the media arrives inside something else, a prepended header or
+a PNG with the MPEG-TS packed into it, and the proxy unpacks it. Those streams always
+need the proxy.
 
 - **MIME correct** → skip the proxy. Open the playlist URL in Safari and go to step 5.
 - **MIME mismatch** → run the proxy, step 4.
