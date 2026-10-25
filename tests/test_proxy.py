@@ -264,8 +264,8 @@ def test_png_segments_are_fetched_before_the_player_asks(start_proxy):
         proxy.text("/live.m3u8")                    # learns it is an image stream
         assert wait_until(lambda: fetched(origin) == ["video5.ts"])
         segments = proxy.routes("/live.m3u8", "seg")
-        assert wait_until(lambda: len(set(fetched(origin))) == 4)
-        assert set(fetched(origin)) == {"video2.ts", "video3.ts", "video4.ts", "video5.ts"}
+        assert wait_until(lambda: len(set(fetched(origin))) == 6)
+        assert set(fetched(origin)) == {"video%d.ts" % n for n in range(6)}, "every listed one"
 
         status, headers, body = proxy.get(segments[-1])
         assert status == 200
@@ -280,12 +280,26 @@ def test_segments_behind_an_image_header_are_prefetched_too(start_proxy):
         proxy.text("/live.m3u8")
         assert wait_until(lambda: fetched(origin) == ["video5.ts"])
         segments = proxy.routes("/live.m3u8", "seg")
-        assert wait_until(lambda: len(set(fetched(origin))) == 4)
+        assert wait_until(lambda: len(set(fetched(origin))) == 6)
 
         status, headers, body = proxy.get(segments[-1])
         assert status == 200
         assert body == SEGMENT, "the header is still on the front"
         assert fetched(origin).count("video5.ts") == 1, "served from the prefetch"
+
+
+def test_a_rate_limited_segment_is_asked_for_again(start_proxy):
+    with FakeOrigin(segment_type="image/png", image="pixels", window=2) as origin:
+        origin.limited["video0.ts"] = 2
+        proxy = start_proxy(origin.url + "/video.m3u8")
+        proxy.text("/live.m3u8")
+        assert wait_until(lambda: fetched(origin) == ["video1.ts"])
+        segments = proxy.routes("/live.m3u8", "seg")
+        assert wait_until(lambda: fetched(origin).count("video0.ts") == 3)
+        status, _, body = proxy.get(segments[0])
+        assert status == 200
+        assert body == SEGMENT
+        assert fetched(origin).count("video0.ts") == 3, "two 429s, then the copy"
 
 
 def test_a_segment_listed_before_the_cdn_has_it_is_waited_for(start_proxy):
