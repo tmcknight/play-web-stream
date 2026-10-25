@@ -163,8 +163,9 @@ def test_a_dead_segment_does_not_fail_the_resolve():
 def test_every_segment_refused_still_fails_the_resolve():
     with FakeOrigin(segment_type="text/plain", window=3) as origin:
         origin.gone.update({"video0.ts", "video1.ts", "video2.ts"})
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(urllib.error.HTTPError) as caught:
             resolver.resolve(origin.url + "/page.html", allow_browser=False)
+        caught.value.close()
 
 
 def test_a_correct_mime_type_needs_no_proxy():
