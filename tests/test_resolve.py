@@ -1,6 +1,7 @@
 """The resolver: finding the playlist, and deciding whether the proxy is needed."""
 
 import sys
+import urllib.error
 
 import pytest
 
@@ -148,6 +149,22 @@ def test_media_inside_a_png_is_reported_as_the_media():
     assert verdict["mime"]["served_as"] == "image/png"
     assert verdict["mime"]["really_is"] == "video/MP2T"
     assert "PNG" in verdict["mime"]["wrapping"]
+
+
+def test_a_dead_segment_does_not_fail_the_resolve():
+    """One origin lists segments that 404 for good, the oldest most often."""
+    with FakeOrigin(segment_type="text/plain", window=3) as origin:
+        origin.gone.update({"video0.ts", "video2.ts"})
+        verdict = resolver.resolve(origin.url + "/page.html", allow_browser=False)
+    assert verdict["mime"]["really_is"] == "video/MP2T"
+    assert verdict["mime"]["segment"].endswith("/video1.ts")
+
+
+def test_every_segment_refused_still_fails_the_resolve():
+    with FakeOrigin(segment_type="text/plain", window=3) as origin:
+        origin.gone.update({"video0.ts", "video1.ts", "video2.ts"})
+        with pytest.raises(urllib.error.HTTPError):
+            resolver.resolve(origin.url + "/page.html", allow_browser=False)
 
 
 def test_a_correct_mime_type_needs_no_proxy():

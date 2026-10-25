@@ -164,24 +164,22 @@ def probe_mime(playlist, referer):
             body, _ = hls_proxy.fetch(variant, referer=referer)
             text = body.decode("utf-8", "replace")
 
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            seg = urllib.parse.urljoin(url, line)
-            # Some origins gate segments too, so the Referer goes with this, and is dropped
-            # for origins that object to one. The sniff looks past any wrapping the proxy
-            # removes, so the report names the container the player will get.
-            data, seg_ct, wrapping = hls_proxy.read_segment(seg, referer=referer)
-            served = (seg_ct or "").split(";")[0].strip().lower()
-            sniffed = hls_proxy.sniff_mime(data)
-            return {"kind": "master" if variant else "media",
-                    "variant": variant,
-                    "playlist_content_type": ctype or "",
-                    "segment": seg,
-                    "served_as": served or "(none)",
-                    "really_is": sniffed,
-                    "wrapping": wrapping,
-                    "match": served == sniffed.lower()}
+    # Some origins gate segments too, so the Referer goes with this, and is dropped for
+    # origins that object to one. The sniff looks past any wrapping the proxy removes, so
+    # the report names the container the player will get.
+    probed = hls_proxy.probe_segments(text, url, referer=referer)
+    if probed:
+        seg, data, seg_ct, wrapping = probed
+        served = (seg_ct or "").split(";")[0].strip().lower()
+        sniffed = hls_proxy.sniff_mime(data)
+        return {"kind": "master" if variant else "media",
+                "variant": variant,
+                "playlist_content_type": ctype or "",
+                "segment": seg,
+                "served_as": served or "(none)",
+                "really_is": sniffed,
+                "wrapping": wrapping,
+                "match": served == sniffed.lower()}
 
     raise ResolveError("The playlist lists no segments.",
                        "The stream is probably not live right now.")
