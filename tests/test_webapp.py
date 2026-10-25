@@ -817,3 +817,27 @@ def test_a_stream_will_not_bind_past_the_ceiling_it_was_given():
         assert port > taken
     finally:
         held.close()
+
+
+# --------------------------------------------------------------------------- version
+
+def test_a_baked_version_wins_over_git(monkeypatch):
+    monkeypatch.setenv("PWS_VERSION", "1.2.3")
+    assert webapp.app_version() == "1.2.3"
+
+
+def test_a_tree_without_git_reports_unknown(monkeypatch):
+    monkeypatch.delenv("PWS_VERSION", raising=False)
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(webapp.subprocess, "run", no_git)
+    assert webapp.app_version() == "unknown"
+
+
+def test_the_page_is_told_the_version(app, monkeypatch):
+    monkeypatch.setattr(webapp, "VERSION", "1.2.3")
+    status, _, body = conftest.http(app + "/api/streams")
+    assert status == 200
+    assert json.loads(body)["version"] == "1.2.3"

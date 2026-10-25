@@ -76,6 +76,7 @@
   .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--accent);
           color: var(--on-accent); display: flex; align-items: center; justify-content: center; }
   .mark .ico { width: 14px; height: 14px; }
+  .foot { margin-top: 48px; text-align: center; font: 12px var(--mono); color: var(--faint); }
   .pill { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px;
           border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
           color: var(--ink); font-size: 14px; font-weight: 500; text-decoration: none;
@@ -405,6 +406,8 @@
     </div>
     <div class="stack" id="airplay"></div>
   </div>
+
+  <footer class="foot" id="version" hidden></footer>
 </div>
 
 <script>
@@ -859,11 +862,20 @@ function applyCapacity(cap) {
   $("go").disabled = full || busy;
 }
 
+// Read on every poll, so a page left open across an upgrade shows the new version.
+function showVersion(v) {
+  const el = $("version");
+  if (!v) return;
+  el.textContent = "play-web-stream " + v;
+  el.hidden = false;
+}
+
 async function loadStreams() {
   let streams = [], capacity = null;
   try {
     const body = await (await fetch("/api/streams")).json();
     streams = body.streams; capacity = body.capacity;
+    showVersion(body.version);
   } catch (e) { return; }
   applyCapacity(capacity);
   // Each stream includes the receivers playing it. Otherwise the picker only knew

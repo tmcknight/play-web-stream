@@ -47,6 +47,26 @@ PROXY = os.path.join(HERE, "hls_proxy.py")
 UI = os.path.join(HERE, "ui.html")
 START_TIMEOUT = 40          # resolve_source() fetches upstream before the state file lands
 
+
+def app_version():
+    """The version shown in the page footer, so a bug report can say what was running.
+
+    The image has no .git, so the build bakes PWS_VERSION in. A checkout asks git, and
+    anything else (a copied tree, git missing) reports "unknown".
+    """
+    baked = os.environ.get("PWS_VERSION", "").strip()
+    if baked:
+        return baked
+    try:
+        out = subprocess.run(["git", "describe", "--tags", "--always", "--dirty"],
+                             cwd=HERE, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "unknown"
+
+
+VERSION = app_version()
+
 opts = None
 advertised = None
 allow_hosts = frozenset()
@@ -442,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parts.path == "/api/streams":
             self._json(200, {"streams": running_streams(self.headers.get("Host", ""),
                                                         self._local_client()),
-                             "capacity": capacity()})
+                             "capacity": capacity(), "version": VERSION})
         elif parts.path == "/api/log":
             source = (query.get("source") or [""])[0]
             needle = "[player]" if (query.get("player") or ["1"])[0] == "1" else None
