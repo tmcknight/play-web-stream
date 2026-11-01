@@ -101,7 +101,7 @@ def test_a_range_on_a_shimmed_segment_counts_from_the_media(start_proxy):
     assert headers["Content-Range"] == "bytes 0-187/%d" % len(SEGMENT)
 
 
-@pytest.mark.parametrize("layout", ["pixels", "trailer"])
+@pytest.mark.parametrize("layout", ["pixels", "trailer", "idat"])
 def test_media_carried_inside_a_png_is_unpacked(start_proxy, layout):
     """One origin hosts segments on an image CDN as real PNGs, and its page unpacks
     them in JavaScript. AVFoundation is handed a PNG unless the proxy does the same."""

@@ -611,9 +611,10 @@ def image_media(data):
     """Recover MPEG-TS carried inside a PNG, or None if this PNG carries none.
 
     Some origins host segments on an image CDN that only accepts real images, and the
-    page's own player unpacks them in JavaScript. Two layouts are in use: the TS appended
-    after the IEND chunk, and the TS gzipped into the RGB values of the pixels behind a
-    marker and a length. AVFoundation will play neither, so the proxy unpacks them here.
+    page's own player unpacks them in JavaScript. Three layouts are in use: the TS appended
+    after the IEND chunk, the TS stored raw as the IDAT body, and the TS gzipped into the
+    RGB values of the pixels behind a marker and a length. AVFoundation will play none of
+    them, so the proxy unpacks them here.
     """
     if not is_image(data):
         return None
@@ -632,11 +633,16 @@ def image_media(data):
     trailer = data[after:]
     if len(trailer) > 188 and trailer[0] == 0x47 and trailer[188] == 0x47:
         return trailer
+    # A zlib stream cannot open with 0x47 (its low nibble must be 8), so IDAT that starts
+    # with TS sync bytes is the media stored raw.
+    joined = b"".join(idat)
+    if len(joined) > 188 and joined[0] == 0x47 and joined[188] == 0x47:
+        return joined
     if not (width and height and idat):
         return None
 
     try:
-        raw = zlib.decompress(b"".join(idat))
+        raw = zlib.decompress(joined)
     except zlib.error:
         return None
     bpp = 4 if colour == 6 else 3
