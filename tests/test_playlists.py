@@ -303,6 +303,10 @@ def test_media_after_the_end_of_an_image_is_recovered():
     assert image_media(png_carrying(TS, "trailer")) == TS
 
 
+def test_media_stored_raw_as_the_image_data_is_recovered():
+    assert image_media(png_carrying(TS, "idat")) == TS
+
+
 def test_an_ordinary_image_carries_no_media():
     plain = png_carrying(b"", "trailer")
     assert image_media(plain) is None

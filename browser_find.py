@@ -30,8 +30,12 @@ def _env_ms(name, fallback):
 
 
 # Tunable for slow pages and connections. A player that has not started fetching within
-# BOOT_MS looks the same as a page with no stream.
-BOOT_MS = _env_ms("PWS_BROWSER_BOOT_MS", 6000)
+# BOOT_MS looks the same as a page with no stream. The wait ends as soon as a playlist
+# response arrives, so this ceiling only costs time on pages that never produce one.
+# Players behind obfuscated loaders and WebAssembly have been seen asking for their
+# playlist nine seconds after the page loaded.
+BOOT_MS = _env_ms("PWS_BROWSER_BOOT_MS", 30000)
+POLL_MS = 250
 NAV_MS = _env_ms("PWS_BROWSER_NAV_MS", 25000)
 
 # From the skill. Matches on content because playlist URLs often have no .m3u8
@@ -117,7 +121,12 @@ def find_playlist(page_url, on_progress=None):
             say("loading page in chromium")
             page.goto(page_url, wait_until="domcontentloaded", timeout=NAV_MS)
             _click_anything(page)
-            page.wait_for_timeout(BOOT_MS)
+            # Waiting in short steps keeps Playwright's event loop running, so the
+            # response handler above fills `from_network` while this loop watches it.
+            waited = 0
+            while not from_network and waited < BOOT_MS:
+                page.wait_for_timeout(POLL_MS)
+                waited += POLL_MS
 
             say("scraping %d frame(s)" % len(page.frames))
             for frame in page.frames:

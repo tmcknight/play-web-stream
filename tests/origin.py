@@ -57,11 +57,17 @@ def _filtered(rows, bpp):
 
 
 def png_carrying(media, layout="pixels", alpha=False, width=4):
-    """A real PNG with `media` inside, in one of the two layouts origins use.
+    """A PNG with `media` inside, in one of the three layouts origins use.
 
     "pixels": a marker, a length and the gzipped media in the RGB values.
     "trailer": an ordinary image with the media appended after IEND.
+    "idat": the media as the IDAT body, uncompressed, with IHDR claiming one row as wide
+    as the media. Not a valid image, but its first bytes pass an image CDN's check.
     """
+    if layout == "idat":
+        ihdr = struct.pack(">IIBBBBB", len(media), 1, 8, 2, 0, 0, 0)
+        return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", media)
+                + _chunk(b"IEND", b""))
     bpp = 4 if alpha else 3
     if layout == "pixels":
         packed = gzip.compress(media)
@@ -118,7 +124,7 @@ class FakeOrigin:
         self.page_query = page_query
         # An iframe the page embeds in place of its own player config.
         self.page_iframe = page_iframe
-        # "pixels" or "trailer": each segment arrives as a PNG with the media inside.
+        # "pixels", "trailer" or "idat": each segment arrives as a PNG with the media inside.
         self.image = image
         # Levels of iframe between page.html and the player config.
         self.nesting = nesting

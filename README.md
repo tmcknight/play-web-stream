@@ -117,7 +117,7 @@ python3 -m venv .venv
 | `PWS_PROXY_PORT_LAST` | `PWS_PROXY_PORT` + 19, or + 3 under Portainer | Last port a stream may take |
 | `PWS_WINDOW` | the proxy's own | Segments to advertise. Raise it if a stream stalls |
 | `PWS_CACHE_MB` | `64` | Memory kept for recent segments, so a widened window still serves after the origin drops them |
-| `PWS_BROWSER_BOOT_MS` | `6000` | How long the fallback waits for a player to build itself |
+| `PWS_BROWSER_BOOT_MS` | `30000` | Longest the fallback waits for a player to request its playlist. It stops early once one arrives |
 | `PWS_BROWSER_NAV_MS` | `25000` | Page load timeout for the fallback |
 | `PWS_AIRPLAY_HOST` | unset | Receiver addresses, comma-separated. Skips mDNS, which bridge networking blocks. Optional: the app can sweep the LAN |
 | `PWS_AIRPLAY_TIMING` | `auto` | `ptp`, `ntp`, or `auto` for PTP falling back to NTP. Newer Apple TVs (tvOS 26.5 on) need PTP; pin `ntp` only if an older one plays badly on it |
