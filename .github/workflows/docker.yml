@@ -53,7 +53,7 @@ jobs:
 
       # amd64 only: arm64 builds under QEMU and took over half an hour. Elsewhere, build
       # from source.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
